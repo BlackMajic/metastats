@@ -1,0 +1,146 @@
+# Metastats Listener Daemon - Half-Life Game Support Module
+# ---------------------------------------------------------
+# A statistical data logger for multiplayer games
+# Copyright (c) 2004-2006, Nick Thomson.
+
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+package halflife;
+
+# void init ()
+# This function is called when UAstats loads the module.
+# Inside should be any initialisation code which the module
+# needs to perform BEFORE any sockets etc are set up.
+#
+sub init
+{
+
+	my $self = shift;
+	
+	print "   GAME: Loading halflife support..\t";
+	print "done.\n";
+
+	return 1;
+
+}
+
+# void parse (string server_id, gametype, data)
+# This function is called by UAstats when data is
+# available for parsing. UAstats checks the sender's
+# IP and port to see which module to send it to, and also
+# finds out which MOD module our GAME module should pass
+# pre-parsed code on to.
+# ip, and port are self explainatory
+# gametype is the name of the module to call for later
+# mod-specific parsing.
+#
+sub parse
+{
+	shift;
+	my ($g_serverid, $g_type, $g_data) = @_;
+
+	substr $g_data, 0, 10, '';
+	$g_data =~ s/\n//g;
+
+	# Get timestamp, matches "dd/dd/dddd - dd:dd:dd"
+	$g_data =~ /^(\d\d)\/(\d\d)\/(\d{4})\040\-\040(\d\d):(\d\d):(\d\d)/;
+	$utime = main::timegm($6, $5, $4, $2, ($1)-1, ($3)-1900);
+	substr $g_data, 0, 23, '';
+
+	if ($g_data =~ /^\"/)
+	{
+		
+		my @parts = ();
+		@parts = split /\"/, $g_data;
+
+		# remove any quotes
+		for ($ct=0, $ct<$#parts, $ct++) { @parts[$ct] =~ s/\"//g; }
+
+		# remove whitespace
+		@parts[2] =~ s/\s//g;
+		@parts[4] =~ s/\s//g;
+
+		my $sub_flag = 0;
+		my $part = '';
+		
+		my $s_name = '';
+		my $s_sid = '';
+		my $s_steamid = '';
+		my $s_team = '';
+
+		my $o_name = '';
+		my $o_sid = '';
+		my $o_steamid = '';
+		my $o_team = '';
+		
+		my @player2 = [];
+
+		foreach $part (@parts)
+		{
+			if ($part =~ /\>$/)
+			{
+				@player1 = &parseName($part) if ($sub_flag == 0);
+				@player2 = &parseName($part) if ($sub_flag == 1);
+				$sub_flag++;
+			}			
+		}
+
+		# [0] name, [2] ID, [3] team
+		foreach $p_item (@player2) { push @player1, $p_item if @player2[2]; }
+		# [4] name, [6] ID, [7] team.
+
+		my $event_type = @parts[2];
+		my $event_object = '';
+		
+		if (@parts[3] =~ /\>$/)
+		{
+			$event_object = @parts[5];
+		}
+		else
+		{
+			$event_object = @parts[3];
+		}
+
+		$g_type->event($g_server_id, $utime, $event_type, $event_object, @player1);
+	}
+	else
+	{
+
+		if ($gdata =~ /^Rcon/)
+		{
+			$g_data =~ /^Rcon\:\040\"rcon\040(\d+)\040\"(.*?)\"\040(.*?)\"\040from\040\"(.*?)\"/;
+			print "-> RCON: $3 from $4 ($2)\n\n\n";
+		}
+
+	}
+
+	print "HLMOD: $utime: $g_data\n\n";
+
+	return 1;
+}
+
+# array parseName (string data)
+# Takes a HL log format name (name, sid, steamid, team)
+# and parses it into individual variables
+sub parseName
+{
+	my ($pData) = @_;
+	my @rvals = ();
+	$pData =~ /^(.*?)\<(\d*?)\>\<(.*?)\>\<(.*?)\>$/;
+	#print "parseName: $1, $2, $3, $4\n";
+	push @rvals, ($1, $2, $3, $4);
+	return @rvals;
+}
+1;

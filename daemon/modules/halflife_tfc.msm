@@ -1,0 +1,84 @@
+# Metastats Listener Daemon - Half-Life TFC Modification Support Module
+# ---------------------------------------------------------------------
+# A statistical data logger for multiplayer games
+# Copyright (c) 2004-2006, Nick Thomson.
+
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+package halflife_tfc;
+
+sub init
+{
+	print "   MOD: Loading TFC support..\t\t";
+	print "done.\n";
+	return 1;
+}
+
+# void event (string event_time, event_type, event_object; array @player1, @player2)
+# This function is called by the gamesupport module when an event happens.
+# The parameters take different contents based on event type, and may not always be filled.
+# eg. with RCON, event_time = time, event_type = 'RCON', and @player1 = ('command', 'from', 'password')
+
+sub event
+{
+	shift;
+	my ($server_id, $event_time, $event_type, $event_object, @t_players) = @_;
+
+#	my ($event_time, $event_type) = split(/\:/, $event_time_type);
+	### Work out what's going on ###
+
+	print "TFC event!\n";
+	print "$event_time: $event_type - $event_object: ".$t_players[0]." - ".$t_players[4]."\n";
+	my ($s_name, $s_steamid, $s_team) = (@t_players[0], @t_players[2], @t_players[3]);
+	my ($o_name, $o_steamid, $o_team) = (@t_players[4], @t_players[6], @t_players[7]);
+
+	if ($event_type eq 'killed')
+	{
+		# check to see if we've seen the player before
+		if ($main::players{halflife}{$s_steamid})
+		{
+			# Yes
+			print "TFCMOD: DBQUERY - SELECT KILLS\n";
+			my $query = "SELECT p_kills FROM uastats_halflife_players WHERE p_uniqueid = '$s_steamid'";
+			$s_query = $main::db->prepare($query);
+			$s_query->execute();
+		}
+		else
+		{
+			print "TFCMOD: DBQUERY - INSERT NEW PLAYER\n";
+			my $query = "INSERT INTO uastats_halflife_players (p_uniqueid, p_name, p_address, p_team, p_class, p_kills, p_deaths, p_skill) VALUES ('$s_steamid', '$s_name', '', '$s_team', '', 1, 0, 1000)";
+			$s_query = $main::db->prepare($query);
+			$s_query->execute();
+			$main::players{halflife}{$s_steamid}=1;
+		}
+			
+	}
+
+		my $query = "INSERT INTO ".$main::cvars{DatabasePrefix}."halflife_playerEvents (event_id, 
+event_time, event_type, event_object, event_player1_name, event_player1_uid, 
+event_player1_team, event_player2_name, event_player2_uid, event_player2_team) 
+VALUES (0, '$event_time', '$event_type', '$event_object', '$s_name', '$s_steamid', 
+'$s_team', '$o_name', '$o_steamid', '$o_team')";
+
+		$query =~ s/\n//g;
+
+		$st_query = $main::db->prepare($query);
+		$st_query->execute();
+
+	return 1;
+
+}
+
+1;
