@@ -1,0 +1,5 @@
+Metastats Listener Daemon - ChangeLog
+-------------------------------------
+
+00.00.00 (release pending)
+[+] First public release.
