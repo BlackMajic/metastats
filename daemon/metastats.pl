@@ -255,7 +255,5 @@ sub sigHUP
 
 sub sigDIE
 {
-
 	# Tidy up!
-
 }
