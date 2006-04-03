@@ -24,6 +24,8 @@
 # settings for this daemon.
 # ################################################
 
+use strict;
+use POSIX;
 
 # array dbQuery (object dbObject; string dbQuery)
 # 
@@ -38,53 +40,98 @@ sub dbQuery
 	my $row = '';
 	my $i;
 	
-	foreach $i ($queries) {
-		$dbQuery = (split /[^\\];/, $queries[$i])[0]; # Stop multipul queries from happening in one string
-		
-		# Escape SQL statement
-		#$dbQuery =~ s/\\/\\\\/g;	# replace \ with \\
-		#$dbQuery =~ s/'/\\'/g;		# replace ' with \'
-		#$dbQuery =~ s/\;/\\\;/g;	# replace ; with \;
+	foreach $i ($main::queries) {
+		# Stop multipul queries from happening in one string
+		my $dbQuery = (split /[^\\];/, $queries[$i])[0];
 		
 		my $dbStatement = $dbObject->prepare($dbQuery)
 					or die("Unable to prepare query");
 		$dbStatement->execute() or die ("Unable to execute statement");
+		
 		while ($row = $dbStatement->fetchrow_hashref()) {
 			push @results, $row;
 		}
 	}
-	@queries = ();
 	return @results;
 }
+
+# void getTrackedServers()
+#
+# SELECT the servers stored in the database, save them into a hash
+# then load them into their game/mod hash respectively.
+#
+sub getTrackedServers
+{
+	my ($query, $result);
+	print "  Identifying Tracked Servers..\t\t";
+	$query = "SELECT
+			server_id,
+			server_ip,
+			server_port,
+			server_name,
+			server_game,
+			server_mod,
+			server_rcon
+		  FROM
+			$main::conf{DBPrefix}_core_servers";
+	
+	foreach $result (&dbQuery($main::db, $query)) {
+		$main::servers{$result->{server_id}} = [$result->{server_ip},
+						  $result->{server_port},
+						  $result->{server_name},
+						  $result->{server_game},
+						  $result->{server_mod},
+						  $result->{server_rcon}];
+		
+		# Associate server ip:port with its ID for quicker checking
+		$main::server_ips{$result->{server_ip}.":".$result->{server_port}} = $result->{server_id};
+	}
+	$result = '';
+	
+	foreach $result (&dbQuery($main::db, "SELECT mod, mod_name FROM $main::conf{DBPrefix}_core_modules")) {
+		$main::games{$result->{mod}} = $result->{mod_name};
+	}
+	$result = '';
+	
+	foreach $result (&dbQuery($main::db, "SELECT id, ext FROM $main::conf{DBPrefix}_core_extensions")) {
+		$main::mods{$result->{id}} = $result->{ext};
+	}
+	print "[ done ]\n";
+}
+
 
 # updateCache ()
 #
 sub updateCache
 {
 
-
 }
 
 # array updateGetVersion ()
+# 
 # Queries the update server, and returns a 3 value array containing the 
 # major, minor, and revision versions respectively.
 #
 sub updateGetVersion
 {
-	$updateserver = "metastats.sourceforge.net";
-	$updateport = "80";
-	$updateurl = "/update.php";
+	my $updateserver = "metastats.sourceforge.net";
+	my $updateport = "80";
+	my $updateurl = "/update.php";
+	my ($ln, $maj, $min, $rev);
 	
-	$http = IO::Socket::INET->new(Proto=>"tcp",PeerAddr=>$updateserver,PeerPort=>$updateport,Reuse=>1) or die "[ fail ]\n";
+	my $http = IO::Socket::INET->new(Proto=>"tcp",
+					 PeerAddr=>$updateserver,
+					 PeerPort=>$updateport,
+					 Reuse=>1,
+					 Timeout=>1)
+			or die "[ fail ]\n";
 	$http->autoflush(1);
 	send ($http,"GET $updateurl HTTP/1.0\nHost: $updateserver\nConnection: keep-alive\n\n",0);
-	while (<$http>)
-	{
+	while (<$http>) {
 		$ln = $_;
 		chop $ln;
 		$ln =~ s/\s//g;
-		if ($ln =~ /^MSV\|(\d\d)\.(\d\d)\.(\d\d)/)
-		{
+		if ($ln =~ /^MSV\|(\d\d)\.(\d\d)\.(\d\d)/) {
 			($maj, $min, $rev) = ($1, $2, $3);
 		}
 	}
@@ -98,21 +145,31 @@ sub updateGetVersion
 	return @res_ver;
 }
 
+# array updateMetastats()
+#
+# Compares major, minor, and revision versions,
+# downloads update script and runs it.
+#
 sub updateMetastats
 {
-	print "   Checking for updates..\t\t";
-	if ($main::conf{UpdateStable} or $main::conf{UpdateBeta}) {
-		my ($vmaj, $vmin, $vrev) = &updateGetVersion();
-		my ($cmaj, $cmin, $crev) = split(/\./, $main::version);
+	my ($update) = @_;
+	print "  Checking for updates..\t\t";
+	if ($update == "stable" || $update == "beta") {
+		my ($rMaj, $rMin, $rRev) = updateGetVersion();
+		my ($lMaj, $lMin, $lRev) = split(/\./, $main::version);
 		print "[ done ]\n";
-		if ($cmaj < $vmaj) {
-			print "     ** A major update is available.\n";
-		} elsif ($cmin < $vmin) {
-			print "     ** A minor update is available.\n";
-		} elsif ($crev < $vrev) {
-			print "     ** An update is available.\n";
+		if ($lMaj < $rMaj) {
+			print "    **A major update is available**\n";
+		} elsif ($lMin < $rMin) {
+			print "    **A minor update is available**\n";
+		} elsif ($lRev < $rRev) {
+			print "    **An update is available**\n";
 		} else {
-			print "     Metastats is up to date.\n";
+			if (!$rMaj && !$rMin && !$rRev) {
+				print "    Metastats cannot contact the update server.\n";
+			} else {
+				print "    Metastats is up to date.\n";
+			}
 		}
 	} else {
 		print "[ skip ]\n"

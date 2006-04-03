@@ -15,7 +15,7 @@
 # 
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
 
 package halflife;
 
@@ -28,7 +28,9 @@ sub init
 {
 	my $self = shift;
 	
-	print "     GAME: Loading halflife support..\t";
+	print "    GAME: Loading halflife support..\t";
+	%r = ();
+	$r{Player} = '\"(.*?)\<(\d*?)\>\<(.*?)\>\<(.*?)\>\"';
 	print "[ done ]\n";
 	
 	return 1;
@@ -48,28 +50,32 @@ sub parse
 {
 	shift;
 	my ($g_serverid, $g_type, $g_data) = @_;
-
-	substr $g_data, 0, 10, '';
-	$g_data =~ s/\n//g;
-
-	# Get timestamp, matches "dd/dd/dddd - dd:dd:dd"
-	$g_data =~ /^(\d\d)\/(\d\d)\/(\d{4})\040\-\040(\d\d):(\d\d):(\d\d)/;
-	$utime = main::timegm($6, $5, $4, $2, ($1)-1, ($3)-1900);
-	substr $g_data, 0, 23, '';
-
-	if ($g_data =~ /^\"/)
-	{
+print "$main::mods{2} event: $g_data.\n";
+	
+	$g_data =~ s/[\r\n\0]//g; # Remove Naughty Characters
+	
+	# Get timestamp, matches and removes "*L MM/DD/YYYY - HH:MM:SS: "
+	#                                        $1 $2  $3    $4 $5 $6
+	if ($g_data =~ s/^.*L (\d\d)\/(\d\d)\/(\d{4}) - (\d\d):(\d\d):(\d\d):\s*//) {
+		my ($mo, $d, $a, $h, $m, $s) = ($1, $2, $3, $4, $5, $6);
+		if ($main::conf{UseTimestamp} == 0) {
+			# Use System Time
+			($s, $m, $h, $d, $mo, $a) = localtime(time());
+			$mo++;
+			$a += 1900;
+		}
+		my $utime = main::timegm($s, $m, $h, $d, ($mo)-1, ($a)-1900);
+	} else {
+		print "MALFORMED DATA: $g_data";
+		exit;
+	}
+print "TimeFree: $g_data.\n";
+	
+	if ($g_data =~ /^\"(.*?)\" (.*?) \"(.*?)\" (.*?) \"(.*?)\"/) {
+		# Matches "$player1" $action "$player2" $mod "$weapon" $prop
 		
-		my @parts = ();
-		@parts = split /\"/, $g_data;
-
-		# remove any quotes
-		for ($ct=0, $ct<$#parts, $ct++) { @parts[$ct] =~ s/\"//g; }
-
-		# remove whitespace
-		@parts[2] =~ s/\s//g;
-		@parts[4] =~ s/\s//g;
-
+		my @parts = ($1, $2, $3, $4, $5, $6);
+		
 		my $sub_flag = 0;
 		my $part = '';
 		
@@ -77,55 +83,52 @@ sub parse
 		my $s_sid = '';
 		my $s_steamid = '';
 		my $s_team = '';
-
+		
 		my $o_name = '';
 		my $o_sid = '';
 		my $o_steamid = '';
 		my $o_team = '';
 		
+		my @player1 = [];
 		my @player2 = [];
-
-		foreach $part (@parts)
-		{
-			if ($part =~ /\>$/)
-			{
+		
+		foreach $part (@parts) {
+			if ($part =~ /\>$/) {
 				@player1 = &parseName($part) if ($sub_flag == 0);
 				@player2 = &parseName($part) if ($sub_flag == 1);
 				$sub_flag++;
 			}			
 		}
-
+		
 		# [0] name, [2] ID, [3] team
 		foreach $p_item (@player2) { push @player1, $p_item if @player2[2]; }
 		# [4] name, [6] ID, [7] team.
-
+		
 		my $event_type = @parts[2];
 		my $event_object = '';
 		
-		if (@parts[3] =~ /\>$/)
-		{
+		if (@parts[3] =~ /\>$/) {
 			$event_object = @parts[5];
-		}
-		else
-		{
+		} else {
 			$event_object = @parts[3];
 		}
-
-		$g_type->event($g_server_id, $utime, $event_type, $event_object, @player1);
-	}
-	else
-	{
-
-		if ($gdata =~ /^Rcon/)
-		{
-			$g_data =~ /^Rcon\:\040\"rcon\040(\d+)\040\"(.*?)\"\040(.*?)\"\040from\040\"(.*?)\"/;
-			print "-> RCON: $3 from $4 ($2)\n\n\n";
+		
+		$main::mods[$g_type]->event($g_server_id, $utime, $event_type, $event_object, @player1);
+	} else {
+print "Server: $g_data.\n";
+		if ($gdata =~ /^Rcon/) {
+			$g_data =~ /^Rcon\: \"rcon (\d+) \"(.*?)\" (.*?)\" from \"(.*?)\"/;
+			print "-> RCON: $3 from $4 ($2)\n\n";
+		} elsif ($gdata =~ /^Kick/) {
+			$g_data =~ /^Kick\: \"(.*?)\" was kicked by \"(.*?)\" \(message \"([^"]*)\"\)/;
+                        print "-> KICK: $1 was kicked by $2 (message $3)\n\n";
+		} else {
+			print "UNRECOGNISED: " . $g_data;
 		}
-
 	}
-
+	
 	print "HLMOD: $utime: $g_data\n\n";
-
+	
 	return 1;
 }
 
@@ -141,4 +144,5 @@ sub parseName
 	push @rvals, ($1, $2, $3, $4);
 	return @rvals;
 }
+
 1;

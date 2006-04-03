@@ -21,7 +21,7 @@ package halflife_tfc;
 
 sub init
 {
-	print "     MOD: Loading TFC support..\t\t";
+	print "    MOD: Loading TFC support..\t\t";
 	print "[ done ]\n";
 	return 1;
 }
