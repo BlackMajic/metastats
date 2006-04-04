@@ -46,31 +46,15 @@ Getopt::Long::Configure ("bundling");
 $|=1;
 $SIG{'HUP'} = \&sigHUP;
 $SIG{'INT'} = \&sigDIE;
-$SIG{__DIE__} = \&sigDIE;
+#$SIG{__DIE__} = \&sigDIE;
 
 ##
 ## Initialize variables & defaults
 ##
-our $version = '00.00.62';
+our $version = '00.00.64';
 our $db;
+our %conf;
 my ($query, $result);
-
-our %conf;		# Setup default config values
-$conf{CoreDir}		= './core';
-$conf{ModuleDir}	= './modules';
-$conf{UseTimestamp}	= 0;
-$conf{DBType}		= 'mysql';
-$conf{DBHost}		= 'localhost';
-$conf{DBPort}		= '3306';
-$conf{DBName}		= 'metastats';
-$conf{DBUser}		= 'metastats';
-$conf{DBPass}		= '';
-$conf{DBPrefix}		= 'ms';
-$conf{DBLowPriority}	= 0;
-$conf{NetUDPHost}	= '';
-$conf{NetUDPPort}	= '27500';
-$conf{NetTCPHost}	= '';
-$conf{NetTCPPort}	= '27500';
 
 my $header = "\nMetastats Listener Daemon $version
 --------------------------------------------------
@@ -86,8 +70,13 @@ is free software, you are welcome to redistribute
 it under certain conditions. For further details,
 please visit http://www.gnu.org/copyleft/gpl.html\n\n";
 
-my $usage = "\nUsage: [cat PATH/*.log |] $0 [OPTIONS]...\n
-Recieve streamed logs from one or more gameservers
+my $usage;
+if ($ENV{OS} =~ /indows/ || $ENV{OSTYPE} =~ /indows/) {
+	$usage = "\nUsage: [type PATH\*.log |] $0 [OPTIONS]...\n";
+} else {
+	$usage = "\nUsage: [cat PATH/*.log |] $0 [OPTIONS]...\n";
+}
+$usage .= "Recieve streamed logs from one or more gameservers
 to be parsed and inserted into a database of some sort.
 
   -h, --help			Display this notice.
@@ -124,7 +113,7 @@ to be parsed and inserted into a database of some sort.
       --timestamp		Use timestamp in logs.
       --notimestamp		Use timestamp on database server. (Default)
 
-Note: Options specified on the command line overwrite options in $configfile.
+Note: Options specified here overwrite options in $configfile.
       See $configfile for more options/information.\n\n";
 
 # Read command line args that stop execution
@@ -136,144 +125,52 @@ GetOptions(
 
 die($usage)  if ($cl_help);
 die($header) if ($cl_version);
-updateMetastats($cl_update) if ($cl_update);
+die(updateMetastats($cl_update)) if ($cl_update);
 
-#
 # Check Dependancies
-#
 $Config{useithreads} or die "Metastats $version requires ithreads for TCP support.Please recompile perl(5.8.1+) and then reload Metastats.\n\n";
 
 ##
 ## Begin Execution
 ##
 print $header;				# Print Metastats information
-%conf = parseConfig($configfile);	# Parse our config
+setPerlConfig();
+setConfConfig();
 require "$conf{CoreDir}/main.pm";	# Include required files
-
-#
-# Connect to Database
-#
-print "  Connecting to database..\t\t";
-$db = DBI->connect("DBI:$conf{DBType}:".$conf{DBName}.":".$conf{DBHost}.":".$conf{DBPort}, $conf{DBUser}, $conf{DBPass})
-		or die("[ fail ]\n  Unable to connect to database:\n->$DBI::errstr\n");
-print "[ done ]\n";
-
-#
-# Read DB Config
-#
-print "  Loading database configuration..\t";
-$query = "SELECT
-		keyname,
-		value
-	  FROM
-		$conf{DBPrefix}_core_config
-	  WHERE
-		ext='core'";
-
-foreach $result(&dbQuery($db, $query)) {
-	$conf{$result->{key}} = $result->{value};
-}
-print "[ done ]\n";
-
-#
-# Read command line variables into %conf (overwrite)
-#
-my ($cl_debug, $cl_nodebug, $cl_verbose, $cl_stdin, $cl_mode, $cl_quiet, 
-$cl_serverip, $cl_serverport, $cl_udpip, $cl_udpport, $cl_tcpip, 
-$cl_tcpport, $cl_dbhost, $cl_dbport, $cl_dbtype, $cl_dbuser, $cl_dbpass, 
-$cl_dbname, $cl_dbprefix, $cl_dns, $cl_dnstimeout, $cl_dnslocate, 
-$cl_rcon, $cl_timestamp, $cl_notimestamp);
-
-print "  Loading commandline configuration..\t";
-GetOptions(
-	"help|h"		=> \$cl_help,
-	"version|V"		=> \$cl_version,
-	"update|u=s"		=> \$conf{Update},
-	"debug|d+"		=> \$cl_debug,
-	"nodebug|n+"		=> \$cl_nodebug,
-	"mode|m=s"		=> \$conf{LogMode},
-	"verbose|v"		=> \$cl_verbose,
-	"quiet|q"		=> \$cl_quiet,
-	"stdin!"		=> \$cl_stdin,
-	"s"			=> \$cl_stdin,
-	"server-ip|i=s"		=> \$cl_serverip,
-	"server-port|p=s"	=> \$cl_serverport,
-	"udp-ip=s"		=> \$conf{NetUDPHost},
-	"udp-port=s"		=> \$conf{NetUDPPort},
-	"tcp-ip=s"		=> \$conf{NetTCPHost},
-	"tcp-port=s"		=> \$conf{NetTCPPort},
-	"db-type=s"		=> \$conf{DBType},
-	"db-host=s"		=> \$conf{DBHost},
-	"db-port=s"		=> \$conf{DBPort},
-	"db-name=s"		=> \$conf{DBName},
-	"db-prefix=s"		=> \$conf{DBPrefix},
-	"db-user=s"		=> \$conf{DBUser},
-	"db-pass=s"		=> \$conf{DBPass},
-	"dns!"			=> \$cl_dns,
-	"dns-timeout=i"		=> \$conf{DNSTimeout},
-	"dns-locate!"		=> \$conf{DNSGeoLookup},
-	"rcon!"			=> \$cl_rcon,
-	"timestamp!"		=> \$cl_timestamp
-) or die($usage);
-
-# Setup listen ips/ports if no/bad value exists
-$conf{NetUDPHost} = "0.0.0.0" if (!$conf{NetUDPHost});
-$conf{NetUDPPort} = 27500 if (!($conf{NetUDPPort}));
-$conf{NetTCPHost} = "0.0.0.0" if (!$conf{NetTCPHost});
-$conf{NetTCPPort} = 27500 if (!($conf{NetTCPPort}));
-print "[ done ]\n";
+dbConnect();
+setDBConfig();
+setCLConfig();
 
 # Auto-update Metastats as per config
 updateMetastats($conf{Update});
 
-#
 # Include Modules
-#
 my @mods = ();
 my %handlers = {};
 my %players = {};
-
 loadModules();
 
-#
+# Create Sockets
+my ($tcpThread, $udpSocket);
+#$tcpThread = netCreateTCPSocket();				#Issues
+$udpSocket = netCreateUDPSocket();
+
 # Get a list of our tracked servers
-#
-my %servers = {};
-my %server_ips = {};
-my %games = {};
-my %mods = {};
-
+our (%servers, %server_ips, %games, %mods);
 getTrackedServers();
-
-#
-# Create TCP Socket
-#
-print "  Creating TCP listener thread..\t[ skip ]\n";
-#my $tcpThread = threads->new(\&tcpListener()); # BUG: CAUGHT HERE
-
-#
-# Create UDP Socket
-#
-print "  Creating UDP listen socket..\t\t";
-my $lsocket = IO::Socket::INET->new(Proto=>"udp",
-		LocalHost=>$conf{NetUDPHost},
-		LocalPort=>$conf{NetUDPPort})
-		or die("[ fail ]\n\nCould not create UDP listen socket:\n->$@\n");
-print "[ done ]\n";
-print "\n  Listening on port $conf{NetUDPPort}(UDP).
---------------------------------------------------\nLegitimate Servers:\n";
+print "--------------------------------------------------\n\n";
 
 ##
 ## Main Loop
 ##
 for (;;) {
 	my $incdata = 'L 01/24/2006 - 18:13:08: "-vdp.a"n"<>>><<guishness!!!!<2><STEAM_0:0:705082><CT>" killed "VULGARDISPLAYOFPOWERnice<1><STEAM_0:1:9409988><TERRORIST>" with "usp"';
-	#$lsocket->recv($incdata, 1024);
-	my $l_remote_host = "127.0.0.1"; #$lsocket->peerhost;
-	my $l_remote_port = "27015";     #$lsocket->peerport;
+	#$udpSocket->recv($incdata, 1024);
+	my $l_remote_host = "127.0.0.1"; #$udpSocket->peerhost;
+	my $l_remote_port = "27015";     #$udpSocket->peerport;
 	my $serverid = $server_ips{$l_remote_host.":".$l_remote_port};
 	if ($serverid) {
-		print "Recognised server ";
+		print "Recognised server\n";
 		$servers{$serverid}[3]->parse($serverid, $servers{$serverid}[4], $incdata);
 	} else {
 		print "Unrecognised server $l_remote_host:$l_remote_port\n";
@@ -374,18 +271,18 @@ sub loadModules
 #
 sub tcpListener
 {
-	print "[ done ]\n  Creating TCP listen socket..\t\t";
-	my $tlsocket = IO::Socket::INET->new(Proto=>"tcp",
+	print "[ done ]\n    Creating TCP listen socket..\t";
+	my $tcpSocket = IO::Socket::INET->new(Proto=>"tcp",
 						Listen=>1,
 						Reuse=>1,
 						LocalHost=>$conf{NetTCPHost},
 						LocalPort=>$conf{NetTCPPort})
-				or die("[ fail ]\n\nCould not create TCP listen socket:\n->$@\n");
+	or die("[ fail ]\n\nCould not create TCP listen socket:\n->$@\n");
 	print "[ done ]\n";
-	print "\n  Listening on port $conf{NetTCPPort}(TCP).\n";
+	print "    Listening on port $conf{NetTCPPort}(TCP).\n";
 	
 	for (;;) {
-		my $tlsock_new = $tlsocket->accept();
+		my $tlsock_new = $tcpSocket->accept();
 		print "  ** Incoming TCP connection from ".$tlsock_new->peerhost.":".$tlsock_new->peerport."..\n";
 		print "  Launching new worker thread..\n";
 		my $tlnID = threads->new(\&tcpWorker($tlsock_new));
@@ -403,7 +300,7 @@ sub tcpWorker
 	my $incdata = " ";
 	
 	while ($sockid->recv($incdata, 1024)) {
-		print "-> $incdata\n";
+		print "TCP-> $incdata\n";
 	}
 	print "  Worker thread exiting\n";
 }
@@ -414,9 +311,14 @@ sub tcpWorker
 #
 sub sigHUP
 {
-	print "\n\n  Recieved SIGHUP..\n";
-	print "    Restarting stuff..\t\t";
-	print "[ done ]\n";
+	print "\n\n  Recieved SIGHUP, restarting..\n";
+	dbDisconnect();
+	setPerlConfig();
+	setConfConfig();
+	dbConnect();
+	setDBConfig();
+	setCLConfig();
+	print "  Continuing logging..\n\n";
 }
 
 # void sigDIE()
@@ -427,4 +329,151 @@ sub sigDIE
 {
 	# Tidy up!
 	print "\n\n  Recieved SIGDIE or SIGINT\n";
+	dbDisconnect();
+	print "  Done.\n\n";
+}
+
+# void setPerlConfig()
+#
+# Sets default values for %config
+#
+sub setPerlConfig
+{
+	$conf{CoreDir}		= './core';
+	$conf{ModuleDir}	= './modules';
+	$conf{UseTimestamp}	= 0;
+	$conf{DBType}		= 'mysql';
+	$conf{DBHost}		= 'localhost';
+	$conf{DBPort}		= '3306';
+	$conf{DBName}		= 'metastats';
+	$conf{DBUser}		= 'metastats';
+	$conf{DBPass}		= '';
+	$conf{DBPrefix}		= 'ms';
+	$conf{DBLowPriority}	= 0;
+	$conf{NetUDPHost}	= '';
+	$conf{NetUDPPort}	= '27500';
+	$conf{NetTCPHost}	= '';
+	$conf{NetTCPPort}	= '27500';
+}
+
+# void setConfConfig()
+#
+# Reads $configfile and outputs values into %conf
+#
+sub setConfConfig
+{
+	%conf = parseConfig($configfile); # Parse our config file
+}
+
+# void dbConnect()
+#
+# Connects to our database
+#
+sub dbConnect
+{
+	print "  Connecting to database..\t\t";
+	$db = DBI->connect("DBI:$conf{DBType}:".$conf{DBName}.":".$conf{DBHost}.":".$conf{DBPort}, $conf{DBUser}, $conf{DBPass})
+			or die("[ fail ]\n  Unable to connect to database:\n->$DBI::errstr\n");
+	print "[ done ]\n";
+}
+
+# void dbDisconnect()
+#
+# Disconnects from our database
+#
+sub dbDisconnect
+{
+	print "  Disconnecting from database..\t\t";
+        $db->disconnect() or die("[ fail ]\n");
+        print "[ done ]\n";
+}
+
+# void setDBConfig
+#
+sub setDBConfig
+{
+	print "  Loading database configuration..\t";
+	$query = "SELECT
+			keyname,
+			value
+		  FROM
+			$conf{DBPrefix}_core_config
+		  WHERE
+			ext='core'";
+	
+	foreach $result(&dbQuery($db, $query)) {
+		$conf{$result->{key}} = $result->{value};
+	}
+	print "[ done ]\n";
+}
+
+sub setCLConfig()
+{	
+	my ($cl_help, $cl_version, $cl_debug, $cl_nodebug, $cl_verbose, 
+		$cl_quiet, $cl_stdin, $cl_serverip, $cl_serverport, 
+		$cl_dns, $cl_rcon, $cl_timestamp);
+	# Read command line variables into %conf (overwrite)
+	print "  Loading commandline configuration..\t";
+	GetOptions(
+		"help|h"		=> \$cl_help,
+		"version|V"		=> \$cl_version,
+		"update|u=s"		=> \$conf{Update},
+		"debug|d+"		=> \$cl_debug,
+		"nodebug|n+"		=> \$cl_nodebug,
+		"mode|m=s"		=> \$conf{LogMode},
+		"verbose|v"		=> \$cl_verbose,
+		"quiet|q"		=> \$cl_quiet,
+		"stdin!"		=> \$cl_stdin,
+		"s"			=> \$cl_stdin,
+		"server-ip|i=s"		=> \$cl_serverip,
+		"server-port|p=s"	=> \$cl_serverport,
+		"udp-ip=s"		=> \$conf{NetUDPHost},
+		"udp-port=s"		=> \$conf{NetUDPPort},
+		"tcp-ip=s"		=> \$conf{NetTCPHost},
+		"tcp-port=s"		=> \$conf{NetTCPPort},
+		"db-type=s"		=> \$conf{DBType},
+		"db-host=s"		=> \$conf{DBHost},
+		"db-port=s"		=> \$conf{DBPort},
+		"db-name=s"		=> \$conf{DBName},
+		"db-prefix=s"		=> \$conf{DBPrefix},
+		"db-user=s"		=> \$conf{DBUser},
+		"db-pass=s"		=> \$conf{DBPass},
+		"dns!"			=> \$cl_dns,
+		"dns-timeout=i"		=> \$conf{DNSTimeout},
+		"dns-locate!"		=> \$conf{DNSGeoLookup},
+		"rcon!"			=> \$cl_rcon,
+		"timestamp!"		=> \$cl_timestamp
+	) or die($usage);
+	#Act on $cl_ vars
+	# Setup listen ips/ports if no/bad value exists
+	$conf{NetUDPHost} = "0.0.0.0" if (!$conf{NetUDPHost});
+	$conf{NetUDPPort} = 27500 if (!($conf{NetUDPPort}));
+	$conf{NetTCPHost} = "0.0.0.0" if (!$conf{NetTCPHost});
+	$conf{NetTCPPort} = 27500 if (!($conf{NetTCPPort}));
+	print "[ done ]\n";
+}
+
+# void netCreateTCPSocket()
+#
+# Creates the TCP Listener thread
+#
+sub netCreateTCPSocket
+{
+	print "  Creating TCP listener thread..\t";
+	$tcpThread = threads->new(\&tcpListener());
+}
+
+# void netCreateUDPSocket()
+#
+# Creates UDP Listen Socket
+#
+sub netCreateUDPSocket
+{
+	print "  Creating UDP listen socket..\t\t";
+	$udpSocket = IO::Socket::INET->new(Proto=>"udp",
+					   LocalHost=>$conf{NetUDPHost},
+					   LocalPort=>$conf{NetUDPPort})
+	or die("[ fail ]\n\nCould not create UDP listen socket:\n->$@\n");
+	print "[ done ]\n";
+	print "    Listening on port $conf{NetTCPPort}(UDP).\n";
 }

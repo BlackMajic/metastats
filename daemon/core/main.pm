@@ -41,6 +41,7 @@ sub dbQuery
 	my $i;
 	
 	foreach $i ($main::queries) {
+		print "$queries[$i]\n" if ($main::conf{Debug} >= 5);
 		# Stop multipul queries from happening in one string
 		my $dbQuery = (split /[^\\];/, $queries[$i])[0];
 		
@@ -54,51 +55,6 @@ sub dbQuery
 	}
 	return @results;
 }
-
-# void getTrackedServers()
-#
-# SELECT the servers stored in the database, save them into a hash
-# then load them into their game/mod hash respectively.
-#
-sub getTrackedServers
-{
-	my ($query, $result);
-	print "  Identifying Tracked Servers..\t\t";
-	$query = "SELECT
-			server_id,
-			server_ip,
-			server_port,
-			server_name,
-			server_game,
-			server_mod,
-			server_rcon
-		  FROM
-			$main::conf{DBPrefix}_core_servers";
-	
-	foreach $result (&dbQuery($main::db, $query)) {
-		$main::servers{$result->{server_id}} = [$result->{server_ip},
-						  $result->{server_port},
-						  $result->{server_name},
-						  $result->{server_game},
-						  $result->{server_mod},
-						  $result->{server_rcon}];
-		
-		# Associate server ip:port with its ID for quicker checking
-		$main::server_ips{$result->{server_ip}.":".$result->{server_port}} = $result->{server_id};
-	}
-	$result = '';
-	
-	foreach $result (&dbQuery($main::db, "SELECT mod, mod_name FROM $main::conf{DBPrefix}_core_modules")) {
-		$main::games{$result->{mod}} = $result->{mod_name};
-	}
-	$result = '';
-	
-	foreach $result (&dbQuery($main::db, "SELECT id, ext FROM $main::conf{DBPrefix}_core_extensions")) {
-		$main::mods{$result->{id}} = $result->{ext};
-	}
-	print "[ done ]\n";
-}
-
 
 # updateCache ()
 #
@@ -124,7 +80,7 @@ sub updateGetVersion
 					 PeerPort=>$updateport,
 					 Reuse=>1,
 					 Timeout=>1)
-			or die "[ fail ]\n";
+			or die("[ fail ]\n");
 	$http->autoflush(1);
 	send ($http,"GET $updateurl HTTP/1.0\nHost: $updateserver\nConnection: keep-alive\n\n",0);
 	while (<$http>) {
@@ -173,6 +129,62 @@ sub updateMetastats
 		}
 	} else {
 		print "[ skip ]\n"
+	}
+}
+
+# void getTrackedServers()
+#
+# SELECT the servers stored in the database, save them into a hash
+# then load them into their game/mod hash respectively.
+#
+sub getTrackedServers
+{
+	my ($query, $result);
+	print "  Identifying Tracked Servers..\n";
+	$query = "SELECT
+			server_id,
+			server_ip,
+			server_port,
+			server_name,
+			server_game,
+			server_mod,
+			server_rcon
+		  FROM
+			$main::conf{DBPrefix}_core_servers";
+	
+	foreach $result (&dbQuery($main::db, $query)) {
+		print "    $result->{server_ip}:$result->{server_port}\n";
+		$main::servers{$result->{server_id}} = [$result->{server_ip},
+							$result->{server_port},
+							$result->{server_name},
+							$result->{server_game},
+							$result->{server_mod},
+							$result->{server_rcon}];
+		
+		# Associate server ip:port with its ID for quicker checking
+		$main::server_ips{$result->{server_ip}.":".$result->{server_port}} = $result->{server_id};
+	}
+	$result = '';
+	
+	$query = "SELECT
+			mod,
+			mod_name
+		  FROM
+			$main::conf{DBPrefix}_core_modules";
+	
+	foreach $result (&dbQuery($main::db, $query)) {
+		$main::games{$result->{mod}} = $result->{mod_name};
+	}
+	$result = '';
+	
+	$query = "SELECT
+			id,
+			ext
+		  FROM
+			$main::conf{DBPrefix}_core_extensions";
+	
+	foreach $result (&dbQuery($main::db, $query)) {
+		$main::mods{$result->{id}} = $result->{ext};
 	}
 }
 
