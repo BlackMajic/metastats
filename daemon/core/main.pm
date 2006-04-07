@@ -27,6 +27,20 @@
 use strict;
 use POSIX;
 
+# void dbConnect()
+#
+# Connects to our database
+#
+sub dbConnect
+{
+	print "  Connecting to database..\t\t";
+	$main::db = DBI->connect("DBI:$main::conf{DBType}:".$main::conf{DBName}.":".$main::conf{DBHost}.":".$main::conf{DBPort},
+				 $main::conf{DBUser},
+				 $main::conf{DBPass})
+			or die("[ fail ]\n  Unable to connect to database:\n->$DBI::errstr\n");
+	print "[ done ]\n";
+}
+
 # array dbQuery (object dbObject; string dbQuery)
 # 
 # Queries the database specified in dbObject
@@ -56,6 +70,17 @@ sub dbQuery
 	return @results;
 }
 
+# void dbDisconnect()
+#
+# Disconnects from our database
+#
+sub dbDisconnect
+{
+	print "  Disconnecting from database..\t\t";
+        $main::db->disconnect() or die("[ fail ]\n");
+        print "[ done ]\n";
+}
+
 # updateCache ()
 #
 sub updateCache
@@ -74,13 +99,14 @@ sub updateGetVersion
 	my $updateport = "80";
 	my $updateurl = "/update.php";
 	my ($ln, $maj, $min, $rev);
+	my @res_ver = (0,0,0);
 	
 	my $http = IO::Socket::INET->new(Proto=>"tcp",
 					 PeerAddr=>$updateserver,
 					 PeerPort=>$updateport,
 					 Reuse=>1,
-					 Timeout=>1)
-			or die("[ fail ]\n");
+					 Timeout=>10)
+			or return @res_ver;
 	$http->autoflush(1);
 	send ($http,"GET $updateurl HTTP/1.0\nHost: $updateserver\nConnection: keep-alive\n\n",0);
 	while (<$http>) {
@@ -93,7 +119,6 @@ sub updateGetVersion
 	}
 	close ($http);
 	
-	my @res_ver = ();
 	@res_ver[0] = $maj;
 	@res_ver[1] = $min;
 	@res_ver[2] = $rev;
@@ -108,23 +133,21 @@ sub updateGetVersion
 #
 sub updateMetastats
 {
-	my ($update) = @_;
 	print "  Checking for updates..\t\t";
-	if ($update == "stable" || $update == "beta") {
+	if ($main::conf{Update} == "stable" || $main::conf{Update} == "beta") {
 		my ($rMaj, $rMin, $rRev) = updateGetVersion();
 		my ($lMaj, $lMin, $lRev) = split(/\./, $main::version);
-		print "[ done ]\n";
 		if ($lMaj < $rMaj) {
-			print "    **A major update is available**\n";
+			print "[ done ]\n    **A major update is available**\n";
 		} elsif ($lMin < $rMin) {
-			print "    **A minor update is available**\n";
+			print "[ done ]\n    **A minor update is available**\n";
 		} elsif ($lRev < $rRev) {
-			print "    **An update is available**\n";
+			print "[ done ]\n    **An update is available**\n";
 		} else {
 			if (!$rMaj && !$rMin && !$rRev) {
-				print "    Metastats cannot contact the update server.\n";
+				print "[ fail ]\n    Metastats cannot contact the update server.\n";
 			} else {
-				print "    Metastats is up to date.\n";
+				print "[ done ]\n    Metastats is up to date.\n";
 			}
 		}
 	} else {
@@ -140,6 +163,11 @@ sub updateMetastats
 sub getTrackedServers
 {
 	my ($query, $result);
+	%main::servers		= {};
+	%main::server_ips	= {};
+	%main::games		= {};
+	%main::mods		= {};
+
 	print "  Identifying Tracked Servers..\n";
 	$query = "SELECT
 			server_id,
@@ -165,6 +193,7 @@ sub getTrackedServers
 		$main::server_ips{$result->{server_ip}.":".$result->{server_port}} = $result->{server_id};
 	}
 	$result = '';
+	print "  Tracked Servers Identified.\n";
 	
 	$query = "SELECT
 			mod,

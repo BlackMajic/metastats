@@ -29,7 +29,7 @@ sub init
 	my $self = shift;
 	
 	print "    GAME: Loading halflife support..\t";
-	%r = ();
+	%r = {};
 	$r{Player} = '\"(.*?)\<(\d*?)\>\<(.*?)\>\<(.*?)\>\"';
 	print "[ done ]\n";
 	
@@ -50,28 +50,35 @@ sub parse
 {
 	shift;
 	my ($g_serverid, $g_type, $g_data) = @_;
-print "$main::mods{2} event: $g_data.\n";
-	
+	my ($utime, $htime, $otime);
 	$g_data =~ s/[\r\n\0]//g; # Remove Naughty Characters
 	
 	# Get timestamp, matches and removes "*L MM/DD/YYYY - HH:MM:SS: "
 	#                                        $1 $2  $3    $4 $5 $6
 	if ($g_data =~ s/^.*L (\d\d)\/(\d\d)\/(\d{4}) - (\d\d):(\d\d):(\d\d):\s*//) {
-		my ($mo, $d, $a, $h, $m, $s) = ($1, $2, $3, $4, $5, $6);
-		if ($main::conf{UseTimestamp} == 0) {
+		my ($mo, $d, $yr, $h, $m, $s) = ($1, $2, $3, $4, $5, $6);
+		if (!$main::conf{UseTimestamp}) {
 			# Use System Time
-			($s, $m, $h, $d, $mo, $a) = localtime(time());
+			($s, $m, $h, $d, $mo, $yr) = localtime(time());
 			$mo++;
-			$a += 1900;
+			$yr += 1900;
 		}
-		my $utime = main::timegm($s, $m, $h, $d, ($mo)-1, ($a)-1900);
+		$h  =~ s/^[0-9]{1}$/0$h/;
+		$m  =~ s/^[0-9]{1}$/0$m/;
+		$s  =~ s/^[0-9]{1}$/0$s/;
+		$d  =~ s/^[0-9]{1}$/0$d/;
+		$mo =~ s/^[0-9]{1}$/0$mo/;
+		$utime = main::timegm($s, $m, $h, $d, ($mo)-1, ($yr)-1900);
+		$htime = "$h:$m:$s $d/$mo/$yr";
+		$otime = "L $mo/$d/$yr - $h:$m:$s";
+#		system("echo '$otime $g_data' >> $main::conf{LogClone}/$main::conf{LogFile}") if ($main::conf{LogClone} && $main::conf{LogFile});
 	} else {
-		print "MALFORMED DATA: $g_data";
-		exit;
+		print "--> MALFORMED DATA: $g_data\n";
 	}
-print "TimeFree: $g_data.\n";
 	
+print "$htime: $g_data\n";
 	if ($g_data =~ /^\"(.*?)\" (.*?) \"(.*?)\" (.*?) \"(.*?)\"/) {
+print "Player: $g_data\n";
 		# Matches "$player1" $action "$player2" $mod "$weapon" $prop
 		
 		my @parts = ($1, $2, $3, $4, $5, $6);
@@ -114,20 +121,61 @@ print "TimeFree: $g_data.\n";
 		}
 		
 		$main::mods[$g_type]->event($g_server_id, $utime, $event_type, $event_object, @player1);
-	} else {
-print "Server: $g_data.\n";
-		if ($gdata =~ /^Rcon/) {
-			$g_data =~ /^Rcon\: \"rcon (\d+) \"(.*?)\" (.*?)\" from \"(.*?)\"/;
-			print "-> RCON: $3 from $4 ($2)\n\n";
-		} elsif ($gdata =~ /^Kick/) {
-			$g_data =~ /^Kick\: \"(.*?)\" was kicked by \"(.*?)\" \(message \"([^"]*)\"\)/;
-                        print "-> KICK: $1 was kicked by $2 (message $3)\n\n";
-		} else {
-			print "UNRECOGNISED: " . $g_data;
+	} elsif ($g_data =~ /^Team/) {
+		if ($g_data =~ /^Team \"(.*?)\" triggered \"(.*?)\"/) {
+			# 061. Team "team" triggered "action"
+			print "-> TEAM: $1 triggered $2\n";
+		} elsif ($g_data =~ /^Team \"(.*?)\" formed alliance with team \"(.*?)\"/) {
+			# 064. Team "team" formed alliance with team "team"
+			print "-> TEAM: $1 allied with $2\n";
+		} elsif ($g_data =~ /^Team \"(.*?)\" scored \"(.*?)\" with \"(.*?)\" players/) {
+			# 065. Team "team" scored "score" with "numplayers" players
+			print "-> TEAM: $1 scored $2 with $3 players\n";
 		}
+	} elsif ($g_data =~ /^Player \$r{Player} scored \"(.*)\"/) {
+		# 067. Player "name<uid><wonid><team>" scored "score"
+		print "-> PLAYER: $1 scored $5\n";
+	} elsif ($g_data =~ /^Rcon\: \"rcon (\d+) \"(.*?)\" (.*)\" from \"(.*?)\"/) {
+		print "-> OK RCON: '$3' from $4 (pass: $2)\n";
+	} elsif ($g_data =~ /^Bad Rcon\: \"rcon (\d+) \"(.*?)\" (.*)\" from \"(.*?)\"/){
+		print "-> BADRCON: '$3' from $4 (pass: $2)\n";
+	} elsif ($g_data =~ /^Kick\: \"(.*?)\" was kicked by \"(.*?)\" \(message \"([^"]*)\"\)/) {
+		print "-> KICK: $1 was kicked by $2 (message '$3')\n\n";
+	} elsif ($g_data =~ /^Server/) {
+		if ($g_data =~ /^Server cvars start/) {
+			print "-> CVARS: start\n";
+		} elsif ($g_data =~ /^Server cvar \"(.*?)\" = \".*?\"/) {
+			print "-> CVAR: $1 = $2\n";
+		} elsif ($g_data =~ /^Server cvars end/) {
+			print "-> CVARS: end\n";
+		} elsif ($g_data =~ /^Server say \"(.*)\"/) {
+			print "-> SERVER SAID: $1\n";
+		} elsif ($g_data =~ /^Server name is \"(.*)\"/) {
+			print "-> SERVER NAME: $1\n";
+		}
+	} elsif ($g_data =~ /^World (.*?) \"(.*?)\"/) {
+		print "-> WORLD EVENT: $1 $2\n";
+	} elsif ($g_data =~ /^Log/) {
+		if ($g_data =~ /^Log file started \(file \"(.*?)\"\) \(game \"(.*?)\"\) \(version \"(.*?)\"\)/) {
+			my $temp = $3;
+			print "-> LOG: started logging to $1 for game: $2\n";
+			$main::conf{LogFile} = $1 if ($main::conf{LogCloneDir}); #only good for one server, each server needs a logfile var
+			$temp =~ /(.*?)\/(.*?)\/(.*?)/;
+			print "-> LOG: protocol: $1 / release: $2 / build: $3\n";
+		} elsif ($g_data =~ /^Log file closed/) {
+			print "-> LOG: closed\n";
+		} else {
+			print "UNRECOGNISED LOG EVENT\n";
+		}
+	} elsif ($g_data =~ /^Loading map \"(.*?)\"/) {
+		print "-> MAP: loading $1\n";
+	} elsif ($g_data =~ /^Started map \"(.*?)\" \(CRC \"(.*?)\"\)/) {
+		print "-> MAP: started $1 CRC: $2\n";
+	} else {
+		print "-> UNRECOGNISED: $g_data\n";
 	}
 	
-	print "HLMOD: $utime: $g_data\n\n";
+	print "\n\n\n";
 	
 	return 1;
 }
