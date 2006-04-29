@@ -26,6 +26,7 @@
 
 use strict;
 use POSIX;
+package main;
 
 # void dbConnect()
 #
@@ -34,11 +35,12 @@ use POSIX;
 sub dbConnect
 {
 	print "  Connecting to database..\t\t";
-	$main::db = DBI->connect("DBI:$main::conf{DBType}:".$main::conf{DBName}.":".$main::conf{DBHost}.":".$main::conf{DBPort},
+	my $db = DBI->connect("DBI:$main::conf{DBType}:".$main::conf{DBName}.":".$main::conf{DBHost}.":".$main::conf{DBPort},
 				 $main::conf{DBUser},
 				 $main::conf{DBPass})
 			or die("[ fail ]\n  Unable to connect to database:\n->$DBI::errstr\n");
 	print "[ done ]\n";
+	return $db;
 }
 
 # array dbQuery (object dbObject; string dbQuery)
@@ -49,13 +51,13 @@ sub dbConnect
 #
 sub dbQuery
 {
-	my ($dbObject, @queries) = @_;
+	my ($dbObject, @queries, $debug) = @_;
 	my @results = ();
 	my $row = '';
 	my $i;
 	
 	foreach $i ($main::queries) {
-		print "$queries[$i]\n" if ($main::conf{Debug} >= 5);
+		print "\n$queries[$i]\n" if ($main::conf{LogLevel} >= 5);
 		# Stop multipul queries from happening in one string
 		my $dbQuery = (split /[^\\];/, $queries[$i])[0];
 		
@@ -63,8 +65,10 @@ sub dbQuery
 					or die("Unable to prepare query");
 		$dbStatement->execute() or die ("Unable to execute statement");
 		
-		while ($row = $dbStatement->fetchrow_hashref()) {
-			push @results, $row;
+		if ($queries[$i] =~ /SELECT/) {
+			while ($row = $dbStatement->fetchrow_hashref()) {
+				push @results, $row;
+			}
 		}
 	}
 	return @results;
@@ -76,8 +80,9 @@ sub dbQuery
 #
 sub dbDisconnect
 {
+	my ($db) = @_;
 	print "  Disconnecting from database..\t\t";
-        $main::db->disconnect() or die("[ fail ]\n");
+        $db->disconnect() or die("[ fail ]\n");
         print "[ done ]\n";
 }
 
@@ -134,7 +139,7 @@ sub updateGetVersion
 sub updateMetastats
 {
 	print "  Checking for updates..\t\t";
-	if ($main::conf{Update} == "stable" || $main::conf{Update} == "beta") {
+	if ($main::conf{Update} eq 'stable' || $main::conf{Update} eq 'beta') {
 		my ($rMaj, $rMin, $rRev) = updateGetVersion();
 		my ($lMaj, $lMin, $lRev) = split(/\./, $main::version);
 		if ($lMaj < $rMaj) {
@@ -162,59 +167,112 @@ sub updateMetastats
 #
 sub getTrackedServers
 {
-	my ($query, $result);
-	%main::servers		= {};
-	%main::server_ips	= {};
-	%main::games		= {};
-	%main::mods		= {};
-
-	print "  Identifying Tracked Servers..\n";
-	$query = "SELECT
+	my ($db) = @_;
+	my (@ret, %servers, %serverIPs, $total);
+	
+	print "\n  Identifying Tracked Servers..\n";
+# limit query to existing .msm/.mem
+	my $query = "SELECT
 			server_id,
 			server_ip,
 			server_port,
-			server_name,
-			server_game,
 			server_mod,
-			server_rcon
+			server_ext,
+			server_rcon,
+			server_name
 		  FROM
 			$main::conf{DBPrefix}_core_servers";
 	
-	foreach $result (&dbQuery($main::db, $query)) {
-		print "    $result->{server_ip}:$result->{server_port}\n";
-		$main::servers{$result->{server_id}} = [$result->{server_ip},
-							$result->{server_port},
-							$result->{server_name},
-							$result->{server_game},
-							$result->{server_mod},
-							$result->{server_rcon}];
+	foreach my $result (&dbQuery($db, $query)) {
+		$total++;
+		print "    ($result->{server_ext})\t$result->{server_ip}:$result->{server_port}\n";
+		$main::servers{$result->{server_id}} = {
+			ID		=> $result->{server_id},
+			IP		=> $result->{server_ip},
+			Port		=> $result->{server_port},
+			Name		=> $result->{server_name},
+			Module		=> $result->{server_mod},
+			Extension	=> "$result->{server_mod}_$result->{server_ext}",
+			Rcon		=> $result->{server_rcon},
+			Map		=> '',
+			MinPlayers	=> $main::conf{MinPlayers},
+			Players		=> (),
+			Pre		=> ()};
 		
 		# Associate server ip:port with its ID for quicker checking
-		$main::server_ips{$result->{server_ip}.":".$result->{server_port}} = $result->{server_id};
+		$main::serverIPs{$result->{server_ip}.":".$result->{server_port}} = $result->{server_id};
 	}
-	$result = '';
-	print "  Tracked Servers Identified.\n";
+	#foreach my $i (keys %servers) { print "$i = $servers{$i}\n";}
+	#foreach my $i (keys %serverIPs) { print "$i = $serverIPs{$i}\n";}
+	$ret[0] = %servers;
+	$ret[1] = %serverIPs;
+	print "  Tracking [ $total ] Servers.\n";
+	
+	return @ret;
+}
+
+# hash getHandlers(dbhandle)
+#
+# Querys db for modules and extensions, then checks if the corresponding 
+# files exist. If they do, run init() and load into %handlers (then return it)
+#
+sub getHandlers
+{
+	print "\n  Initializing Modules..\n";
+	my ($db) = @_;
+	my (%handlers, %modules, %extensions);
+	my ($query, $result, $r, $good, $total);
 	
 	$query = "SELECT
-			mod,
-			mod_name
-		  FROM
+			*
+		FROM
 			$main::conf{DBPrefix}_core_modules";
 	
-	foreach $result (&dbQuery($main::db, $query)) {
-		$main::games{$result->{mod}} = $result->{mod_name};
+	foreach $result (&dbQuery($db, $query)) {
+		print "  M:$result->{mod_name}";
+		$total++;
+		if (-e $main::conf{ModuleDir} . '/' . $result->{mod_short} . '.msm') {
+			# Require it
+			require $main::conf{ModuleDir} . '/' . $result->{mod_short} . '.msm';
+			
+			# Initialise it
+			if ($result->{mod_short}->init()) {
+				$good++;
+				$handlers{$result->{mod_short}} = {};
+				$query = "SELECT
+						*
+					FROM
+						$main::conf{DBPrefix}_core_extensions
+					WHERE
+						mod = '$result->{mod_short}'";
+				foreach $r (&dbQuery($db, $query)) {
+					$total++;
+					print "  E:$r->{ext_name}";
+					if (-e $main::conf{ModuleDir} . '/' . $r->{mod} . '_' . $r->{ext_short} . '.mem') {
+						# Require it
+						require $main::conf{ModuleDir} . '/' . $r->{mod} . '_' . $r->{ext_short} . '.mem';
+						
+						# Initialise it
+						if ("$r->{mod}_$r->{ext_short}"->init()) {
+							$good++;
+							$handlers{"$r->{mod}_$r->{ext_short}"} = {};
+						} else {
+							print "\t\t\t\t[ierror]\n";
+						}
+					} else {
+						print "\t\t\t[nofile]\n";
+					}
+				}
+			} else {
+				print "\t\t\t\t[ierror]\n";
+			}
+		} else {
+			print "\t\t\t\t[nofile]\n";
+		}
 	}
-	$result = '';
+	print "  [ $good of $total ] Modules Initialized.\n";
 	
-	$query = "SELECT
-			id,
-			ext
-		  FROM
-			$main::conf{DBPrefix}_core_extensions";
-	
-	foreach $result (&dbQuery($main::db, $query)) {
-		$main::mods{$result->{id}} = $result->{ext};
-	}
+	return %handlers; #, %modules, %extensions);
 }
 
 1;

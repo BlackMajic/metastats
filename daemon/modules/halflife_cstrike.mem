@@ -1,0 +1,278 @@
+# Metastats Listener Daemon - Half-Life Counter-Strike Extension Module
+# ---------------------------------------------------------------------
+# A statistical data logger for multiplayer games
+# Copyright (c) 2006 Tim McLennan.
+# 
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+use strict "vars";
+use POSIX;
+package halflife_cstrike;
+
+sub init
+{
+	our %r = {};
+#	$r{Player} = gw/\"(.*?)<(\d\d)><(.*?)><(.*?)>\"/;
+	print "\t\t\t[ done ]\n";
+	return 1;
+}
+
+# void event (string event_time, event_type, event_object; array @player1, @player2)
+# This function is called by the gamesupport module when an event happens.
+# The parameters take different contents based on event type, and may not always be filled.
+# eg. with RCON, event_time = time, event_type = 'RCON', and @player1 = ('command', 'from', 'password')
+
+sub playerEvent
+{
+	shift;
+	my ($db, $server, $utime, $player, $line) = @_;
+	my ($verb, %victim, $action, $message, $weapon, %properties, $out);
+	my ($haveplayer);
+	
+	$line =~ s/^([^\"\(]+)//;
+	$verb = $1;
+#	$verb =~ s/^\s+//;
+	$verb =~ s/\s+$//;
+	$line =~ s/^\s+//;
+#	$line =~ s/\s+$//;
+	
+	my $trackID;
+	if ($main::conf{Mode} eq 'Normal') {
+		$trackID = 'SteamID';
+	} elsif ($main::conf{Mode} eq 'NameTrack') {
+		$trackID = 'Name';
+	} elsif ($main::conf{Mode} eq 'LAN') {
+		$trackID = 'IP';
+	}
+	print  "$player->{Name} '$verb' '$line'\n";
+	if (!$server->{Players}{$player->{$trackID}}) {
+		if (!$server->{Pre}{$player->{Name}}) {
+			$out .= "UNRECOGNISED PLAYER: $player->{Name}\n";
+		}
+		$haveplayer = 0;
+	}
+	
+	if ($line =~ s/^\"(.*?)<(\d\d)><(.*?)><(.*?)>\"\s+//) {
+		$victim{Name}    = $1;
+		$victim{UID}     = $2;
+		$victim{SteamID} = $3;
+		$victim{Team}    = $4;
+		
+		if ($verb eq 'killed' || $verb eq 'attacked') {
+			# 057. Kills
+			# 058. Injuring
+			$line =~ /^with \"(.*?)\" ?(.*?)$/;
+			$weapon     = $1;
+			%properties = getProperties($2);
+			if ($verb eq 'killed') {
+				$out .= "$player->{Name} killed $victim{Name} with $weapon\n";
+			} else {
+				$out .= "$player->{Name} attacked $victim{Name} with $weapon for $properties{damage} damage\n";
+			}
+		}
+	} else {
+		if ($verb eq 'triggered') {
+			if ($line =~ /^\"(.*?)\" against \"(.*?)<(\d\d)><(.*?)><(.*?)>\" (.*?)$/) {
+				$action          = $1;
+				$victim{Name}    = $2;
+				$victim{UID}     = $3;
+				$victim{SteamID} = $4;
+				$victim{Team}    = $5;
+				%properties      = getProperties($6);
+				$out .= "$player->{Name} triggered $action against $victim{Name}";
+# reward player, reward victim?
+			} elsif ($line =~ /^\"(.*?)\" (.*?)$/) {
+				$action     = $1;
+				%properties = getProperties($2);
+				$out .= "$player->{Name} triggered $action";# reward player
+			}
+		} elsif ($verb eq 'connected, address') {
+			# 050. Connect
+			$line =~ /\"(.*?)\:(\d+)\"$/;
+			$player->{IP}   = $1;
+			$player->{Port} = $2;
+			$out .= "CONNECT: $player->{Name} ($player->{IP}:$player->{Port})\n";
+# new player? add to db & validation list
+# add to validation list
+			$server->{Preconnect}{$player->{UID}} = $player;
+# add to connects db with $utime for breakdown
+			my $query = "INSERT INTO
+					$main::conf{DBPrefix}_halflife_events_connects
+				VALUES ('',
+					$utime,
+					$server->{ID},
+					'$server->{Map}',
+					'$player->{ID}',
+					'$player->{IP}',
+					'',
+					'')";
+			main::dbQuery($db, $query);
+		} elsif ($verb eq 'STEAM USERID validated') {
+			$out .= "got $player->{Name}'s USERID";
+			my $query = "SELECT
+					player_id
+				FROM
+					$main::conf{DBPrefix}_halflife_playeruniqueids
+				WHERE
+					unique_id = '$player->{SteamID}'
+				AND
+					mod = 'halflife_cstrike'";
+			my $result = (main::dbQuery($db, $query))[0];
+			$player->{ID} = $result->{player_id};
+			if (!$player->{ID}) {
+				# New Player!
+				my $query = "INSERT INTO
+						$main::conf{DBPrefix}_halflife_players
+						(last_name)
+					VALUES ('$player->{Name}')";
+				main::dbQuery($db, $query);
+				my $query = "SELECT LAST_INSERT_ID()";
+				my $result = (main::dbQuery($db, $query))[0];
+				$player->{ID} = $result->{'last_insert_id()'};
+				my $query = "INSERT INTO
+						$main::conf{DBPrefix}_halflife_playeruniqueids
+					VALUES ('$player->{ID}',
+						'$player->{SteamID}',
+						'halflife_cstrike',
+						'')";
+				main::dbQuery($db, $query);
+			}
+			$server->{Players}{$trackID} = $player; # update %server's version of player's uniqueid, begin tracking him
+			delete $server->{Preconnect}{$player->{UID}}; # remove from temp hash
+		} elsif ($verb eq 'entered the game') {
+			$server->{NumPlayers}++;
+			$out .= "$player->{Name} entered the game";
+		} elsif ($verb eq 'disconnected') {
+			$line =~ /(.*?)$/;
+			%properties = getProperties($1);
+			$server->{NumPlyaers}--;
+			$out .= "$player->{Name} disconnected ($properties{reason})";
+		} elsif ($verb eq 'was kicked by') {
+			$line =~ /\"(.*?)\" (.*?)$/;
+			my $kicker  = $1;
+			%properties = getProperties($2);
+# add to #of kicks for player
+			$server->{NumPlayers}--;
+			$out .= "$player->{Name} was kicked by $kicker ($properties{reason})"
+		} elsif ($verb eq 'committed suicide with') {
+			$line =~ /\"(.*?)\"$/;
+			$weapon = $1;
+# suicides++, lower skill by weapon modifier
+			$out .= "$player->{Name} committed suicide with $weapon";
+		} elsif ($verb eq 'joined team') {
+			# 054. Team selection
+			$line =~ /\"(.*?)\"$/;
+			$player->{Team} = $1;
+# update %server's team list, update db
+			$out .= "$player->{Name} joined $1";
+		} elsif ($verb eq 'changed role to') {
+			# 055. Role selection
+			$line =~ /\"(.*?)\"$/;
+			$player->{Role} = $1;
+# update db
+			$out .= "$player->{Name} changed role to $1";
+		} elsif ($verb eq 'changed name to') {
+			# 056. Change Name
+			$line =~ /\"(.*?)\"$/;
+# if in nametrack, reset skill to new name
+			$out .= "$player->{Name} changed name to $1";
+			$player->{Name} = $1;
+		} elsif ($verb eq 'say' || $verb eq 'say_team') {
+			$line =~ /\"(.*?)\" ?(.*)?$/;
+			$message    = $1;
+			%properties = getProperties($2);
+			$out .= "$player->{Name} said $message";
+# Call talk handler module
+		} else {
+			$out .= "UNRECOGNISED CSTRIKE PLAYER EVENT: $verb\_$line\n";
+		}
+	}
+	print "--> $out\n";
+	return 1;
+}
+
+sub teamEvent
+{
+	shift;
+	my ($server, $utime, $team, $line) = @_;
+	my ($verb, $ally, $score, $numplayers, $action, $out, %properties);
+	
+	$line =~ s/([^\"\(]+)\s+//;
+	$verb = $1;
+	
+	if ($verb eq 'triggered') {
+		$line =~ /\"(.*?)\" (.*?)$/;
+		$action = $1;
+		%properties = getProperties($2);
+# Reward team
+		$out = "$team triggered $action";
+		foreach my $i (keys %properties) { $out .= " ($i $properties{$i})"; }
+	} elsif ($verb eq 'formed alliance with team') {
+		$line =~ /^\"(.*?)\"$/;
+		$ally = $1;
+# setup alliance table
+# if a player from team kills a player from ally, count as TK.
+		$out = "$team is allied with $ally";
+	} elsif ($verb eq 'scored') {
+		$line =~ /^\"(.*?)\" with \"(.*?)\" players$/;
+		$score      = $1;
+		$numplayers = $2;
+# award players on team with score/numplayers
+		$out = "$team scored $score with $numplayers players";
+	} else {
+		$out = "UNRECOGNISED CSTRIKE TEAM EVENT: $verb $line";
+	}
+	print "--> $out\n";
+}
+
+sub cvarEvent
+{
+	shift;
+	my ($server, $utime, $cvar, $value) = @_;
+	my $out;
+	print "--> $out\n";
+	return 1;
+}
+
+sub getProperties
+{
+	my ($props) = @_;
+	my ($prop, %ret, %prev);
+	
+	if ($props =~ s/^\((.*?)\)\s+//) {
+		$prop = $1;
+		if ($prop =~ /^(.*?) \"(.*?)\"$/) {
+			$ret{$1} = $2;
+		} elsif ($prop =~ /^([^"]+)$/) {
+			$ret{$1} = 1;
+		}
+		%prev = getProperties($props);
+	} elsif ($props =~ s/^\((.*?)\)$//) {
+		# Last property
+		$prop = $1;
+		if ($prop =~ /^(.*?) \"(.*?)\"$/) {
+			$ret{$1} = $2;
+		} elsif ($prop =~ /^([^"]+)$/) {
+			$ret{$1} = 1;
+		}
+	}
+	
+	foreach my $i (keys %prev) {
+		$ret{$i} = $prev{$i};
+	}
+	return %ret;
+}
+
+1;

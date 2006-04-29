@@ -50,10 +50,10 @@ $SIG{'HUP'} = \&sigHUP;
 ##
 ## Initialize variables & defaults
 ##
-our $version = '00.00.71';
-our $db;
+our $version = '00.00.73';
+my $db;
 our %conf;
-my ($query, $result);
+my (%cl);
 
 my $header = "\nMetastats Listener Daemon $version
 --------------------------------------------------
@@ -117,7 +117,6 @@ Note: Options specified here overwrite options in $configfile.
       See $configfile for more options/information.\n\n";
 
 # Read command line args into hash so they can be read later
-our %cl = {};
 GetOptions(
 	"help|h|?"		=> \$cl{help},
 	"version|V"		=> \$cl{version},
@@ -158,46 +157,60 @@ $Config{useithreads} or die "Metastats $version requires ithreads support. Pleas
 ##
 ## Begin Execution
 ##
-print $header;				# Print Metastats info
-setPerlConfig();			# Set Config defaults
-setConfConfig();			# Overwrite defaults from .conf
-require "$conf{CoreDir}/main.pm";	# Include required files
-dbConnect();				# Connect to DB
-setDBConfig();				# Overwrite .conf from DB
-setCLConfig();				# Overwrite DB from command line
-updateMetastats($conf{Update});		# Auto-update Metastats (if set)
+print $header;
 
-# Include Modules
-our (@mods, %handlers, %players);
-loadModules();
+# Populate %conf, connect to DB
+%conf = setPerlConfig();
+%conf = setConfConfig($configfile, %conf);
+require "$conf{CoreDir}/main.pm";
+$db = dbConnect();
+%conf = setDBConfig($db, %conf);
+%conf = setCLConfig(%conf, %cl);				#%cl is global?
+
+# Auto-update Metastats (if set)
+updateMetastats($conf{Update});
+
+# Init Modules/Extensions
+our %handler = getHandlers($db);
+
+# Get a list of our tracked servers
+our (%servers, %serverIPs);
+getTrackedServers($db);						#Returns nothing
 
 # Create Sockets
 my ($tcpThread, $udpSocket);
-#$tcpThread = netCreateTCPSocket();				#Issues
-$udpSocket = netCreateUDPSocket();
+#my $tcpThread = netCreateTCPSocket();				#Infanant Loop
+my $udpSocket = netCreateUDPSocket();
 
-# Get a list of our tracked servers
-our (%servers, %server_ips, %games, %mods);
-getTrackedServers();
+print "\n  Now logging using time from ";
+print "logs" if ($conf{UseTimestamp});
+print "db"   if (!$conf{UseTimestamp});
+print " in $conf{Mode} Mode\n";
 print "--------------------------------------------------\n\n";
 
 ##
 ## Main Loop
 ##
 for (;;) {
-	my $incdata = '';
-		#'L 01/24/2006 - 18:13:08: "-vdp.a"n"<>>><<guishness!!!!<2><STEAM_0:0:705082><CT>" killed "VULGARDISPLAYOFPOWERnice<1><STEAM_0:1:9409988><TERRORIST>" with "usp"';
-	$udpSocket->recv($incdata, 1024);
-		# my $l_remote_host = '127.0.0.1';
-		# my $l_remote_port = '27500';
-	my $l_remote_host = $udpSocket->peerhost;
-	my $l_remote_port = $udpSocket->peerport;
-	my $serverid = $server_ips{$l_remote_host.":".$l_remote_port};
-	if ($serverid) {
-		print "Recognised server $l_remote_host:$l_remote_port\n";
-		$servers{$serverid}[3]->parse($serverid, $servers{$serverid}[4], $incdata);
+	my ($incdata, $UDPHost, $UDPPort, $serverID);
+	#'L 01/24/2006 - 18:13:08: "-vdp.a"n"<>>><<guishness!!!!<2><STEAM_0:0:705082><CT>" killed "VULGARDISPLAYOFPOWERnice<1><STEAM_0:1:9409988><TERRORIST>" with "usp"';
+	if ($conf{STDIN}) {
+		$UDPHost = $conf{LogIP};
+		$UDPPort = $conf{LogPort};
+		$incdata = <STDIN>;
 	} else {
-		print "--> Unrecognised server $l_remote_host:$l_remote_port\n";
+		$udpSocket->recv($incdata, 1024);
+		$UDPHost = $udpSocket->peerhost;
+		$UDPPort = $udpSocket->peerport;
+	}
+	
+	$serverID = $serverIPs{$UDPHost.':'.$UDPPort};
+	
+	if ($serverID) {
+		print "Recognised $servers{$serverID}->{Module} server $UDPHost:$UDPPort\n";
+		$servers{$serverID}->{Module}->parse($db, $servers{$serverID}, $incdata);
+	} else {
+		print "--> Unrecognised server $UDPHost:$UDPPort\n";
 	}
 }
 
@@ -212,23 +225,25 @@ for (;;) {
 sub setPerlConfig
 {
 	print "  Reading default config..\t\t";
-	%conf = {};
-	$conf{CoreDir}		= './core';
-	$conf{ModuleDir}	= './modules';
-	$conf{UseTimestamp}	= 0;
-	$conf{DBType}		= 'mysql';
-	$conf{DBHost}		= 'localhost';
-	$conf{DBPort}		= '3306';
-	$conf{DBName}		= 'metastats';
-	$conf{DBUser}		= 'metastats';
-	$conf{DBPass}		= '';
-	$conf{DBPrefix}		= 'ms';
-	$conf{DBLowPriority}	= 0;
-	$conf{NetUDPHost}	= '';
-	$conf{NetUDPPort}	= '27500';
-	$conf{NetTCPHost}	= '';
-	$conf{NetTCPPort}	= '27500';
+	my %cv = {};
+	$cv{CoreDir}		= './core';
+	$cv{ModuleDir}		= './modules';
+	$cv{UseTimestamp}	= 0;
+	$cv{DBType}		= 'mysql';
+	$cv{DBHost}		= 'localhost';
+	$cv{DBPort}		= '3306';
+	$cv{DBName}		= 'metastats';
+	$cv{DBUser}		= 'metastats';
+	$cv{DBPass}		= '';
+	$cv{DBPrefix}		= 'ms';
+	$cv{DBLowPriority}	= 0;
+	$cv{NetUDPHost}		= '';
+	$cv{NetUDPPort}		= '27500';
+	$cv{NetTCPHost}		= '';
+	$cv{NetTCPPort}		= '27500';
 	print "[ done ]\n";
+	
+	return %cv;
 }
 
 # hash parseConfig (string configFile)
@@ -236,10 +251,9 @@ sub setPerlConfig
 # Open the config file, and parse it's contents
 # into a hash
 #
-sub parseConfig
+sub setConfConfig
 {
-	my ($configFile) = @_;
-	my %cv = undef;
+	my ($configFile, %cv) = @_;
 	
 	print "  Loading configuration file..\t\t";
 	if (-e $configFile) {
@@ -271,16 +285,8 @@ sub parseConfig
 		print "[ fail ]\n\n";
 		die "The configuration file was not found.\nPlease check that $configFile exists.";
 	}
+	
 	return %cv;
-}
-
-# void setConfConfig()
-#
-# Reads $configfile and outputs values into %conf
-#
-sub setConfConfig
-{
-	%conf = parseConfig($configfile); # Parse our config file
 }
 
 # void setDBConfig
@@ -289,8 +295,9 @@ sub setConfConfig
 #
 sub setDBConfig
 {
+	my ($db, %cv) = @_;
 	print "  Loading database configuration..\t";
-	$query = "SELECT
+	my $query = "SELECT
 			keyname,
 			value
 		  FROM
@@ -298,98 +305,65 @@ sub setDBConfig
 		  WHERE
 			ext='core'";
 	
-	foreach $result(&dbQuery($db, $query)) {
-		$conf{$result->{key}} = $result->{value};
+	foreach my $result(dbQuery($db, $query)) {
+		$cv{$result->{keyname}} = $result->{value};
 	}
 	print "[ done ]\n";
+	return %cv;
 }
 
-sub setCLConfig()
+sub setCLConfig
 {
+	my (%cv) = @_;
+	# WTF? %cl is global?
+	#foreach my $i (keys %cl) { print "$i = $cl{$i}\n"; }
+	
 	# Read command line variables %cl into %conf (overwrite)
 	print "  Loading commandline configuration..\t";
-	
 	die($usage)					if ($cl{help});
 	die($header)					if ($cl{version});
-	$conf{Update}		= $cl{update}		if ($cl{update});
-	$conf{LogLevel}		+= $cl{debug}		if ($cl{debug});
-	$conf{LogLevel}		-= $cl{nodebug}		if ($cl{nodebug});
-	$conf{LogLevel}		= 0			if ($conf{Debug} < 0);
-	$conf{Mode}		= $cl{mode}		if ($cl{mode});
-	$conf{LogEcho}		= 1			if ($cl{verbose});
-	$conf{LogEcho}		= 0			if ($cl{quiet});
+	$cv{Update}		= $cl{update}		if ($cl{update});
+	$cv{LogLevel}		+= $cl{debug}		if ($cl{debug});
+	$cv{LogLevel}		-= $cl{nodebug}		if ($cl{nodebug});
+	$cv{LogLevel}		= 0			if ($conf{Debug} < 0);
+	$cv{Mode}		= $cl{mode}		if ($cl{mode});
+	$cv{LogEcho}		= 1			if ($cl{verbose});
+	$cv{LogEcho}		= 0			if ($cl{quiet});
 	# STDIN info
-	$conf{STDIN}		= 1			if ($cl{stdin});
-	$conf{STDIN}		= 0			if (!$cl{stdin});
-	$conf{STDIN}		= 1			if ($cl{s});
-	$conf{LogIP}		= $cl{serverip}		if ($cl{serverip});
-	$conf{LogPort}		= $cl{serverport}	if ($cl{serverport});
-	$conf{NetUDPHost}	= $cl{udpip}		if ($cl{udpip});
-	$conf{NetUDPPort}	= $cl{udpport}		if ($cl{udpport});
-	$conf{NetTCPHost}	= $cl{tcpip}		if ($cl{tcpip});
-	$conf{NetTCPPort}	= $cl{tcpport}		if ($cl{tcpport});
-	$conf{NetUDPHost} 	= "0.0.0.0"		if (!$conf{NetUDPHost});
-	$conf{NetUDPPort} 	= 27500			if (!$conf{NetUDPPort});
-	$conf{NetTCPHost} 	= "0.0.0.0"		if (!$conf{NetTCPHost});
-	$conf{NetTCPPort} 	= 27500			if (!$conf{NetTCPPort});
+	$cv{STDIN}		= 1			if ($cl{stdin});
+	$cv{STDIN}		= 0			if (!$cl{stdin});
+	$cv{STDIN}		= 1			if ($cl{s});
+	$cv{LogIP}		= $cl{serverip}		if ($cl{serverip});
+	$cv{LogPort}		= $cl{serverport}	if ($cl{serverport});
+	$cv{NetUDPHost}		= $cl{udpip}		if ($cl{udpip});
+	$cv{NetUDPPort}		= $cl{udpport}		if ($cl{udpport});
+	$cv{NetTCPHost}		= $cl{tcpip}		if ($cl{tcpip});
+	$cv{NetTCPPort}		= $cl{tcpport}		if ($cl{tcpport});
+	$cv{NetUDPHost} 	= "0.0.0.0"		if (!$conf{NetUDPHost});
+	$cv{NetUDPPort} 	= 27500			if (!$conf{NetUDPPort});
+	$cv{NetTCPHost} 	= "0.0.0.0"		if (!$conf{NetTCPHost});
+	$cv{NetTCPPort} 	= 27500			if (!$conf{NetTCPPort});
 	# Database settings
-	$conf{DBType}		= $cl{dbtype}		if ($cl{dbtype});
-	$conf{DBHost}		= $cl{dbhost}		if ($cl{dbhost});
-	$conf{DBPort}		= $cl{dbport}		if ($cl{dbport});
-	$conf{DBName}		= $cl{dbname}		if ($cl{dbname});
-	$conf{DBPrefix}		= $cl{dbprefix}		if ($cl{dbprefix});
-	$conf{DBUser}		= $cl{dbuser}		if ($cl{dbuser});
-	$conf{DBPass}		= $cl{dbpass}		if ($cl{dbpass});
-	$conf{DeleteDays}	= $cl{deletedays}	if ($cl{deletedays});
+	$cv{DBType}		= $cl{dbtype}		if ($cl{dbtype});
+	$cv{DBHost}		= $cl{dbhost}		if ($cl{dbhost});
+	$cv{DBPort}		= $cl{dbport}		if ($cl{dbport});
+	$cv{DBName}		= $cl{dbname}		if ($cl{dbname});
+	$cv{DBPrefix}		= $cl{dbprefix}		if ($cl{dbprefix});
+	$cv{DBUser}		= $cl{dbuser}		if ($cl{dbuser});
+	$cv{DBPass}		= $cl{dbpass}		if ($cl{dbpass});
+	$cv{DeleteDays}		= $cl{deletedays}	if ($cl{deletedays});
 	# DNS settings
-	$conf{DNSEnable}	= 1			if ($cl{dns});
-	$conf{DNSEnable}	= 0			if (!$cl{dns});
-	$conf{DNSTimeout}	= $cl{dnstimeout}	if ($cl{dnstimeout});
-	$conf{DNSGeoLocate}	= 1			if ($cl{dnslocate});
-	$conf{RconEnable}	= 1			if ($cl{rcon});
-	$conf{RconEnable}	= 0			if (!$cl{rcon});
-	$conf{UseTimestamp}	= 1			if ($cl{timestamp});
-	print "[ done ]\n";
-}
-
-# void loadModules()
-#
-# Open the modules directory and require *.msm; set up handlers
-# then require *.mem and setup their handlers
-#
-sub loadModules
-{
-	# Include Support Modules
-	print "\n  Loading Support Modules..\n";
-	opendir (MDIR, $conf{ModuleDir}) or die ("[ fail ]\nCan't open support modules directory.\n\n");
-	while (my $file = readdir(MDIR)) {
-		if ($file =~ /\.msm$/) {
-			# Require it
-			require $conf{ModuleDir}.'/'.$file;
-			
-			# Initialise it
-			$file =~ s/\.msm$//;
-			$file->init();
-			$handlers{$file} = {};
-			$players{$file} = {};
-		}
-		# We don't want to load MOD support until all the
-		# game support files have been initialised.
-		push @mods, $file if ($file =~ /\.mem$/);
-	}
-	closedir DIR;
-	print "  Completed Loading Modules.\n\n";
+	$cv{DNSEnable}		= 1			if ($cl{dns});
+	$cv{DNSEnable}		= 0			if (!$cl{dns});
+	$cv{DNSTimeout}		= $cl{dnstimeout}	if ($cl{dnstimeout});
+	$cv{DNSGeoLocate}	= 1			if ($cl{dnslocate});
+	$cv{RconEnable}		= 1			if ($cl{rcon});
+	$cv{RconEnable}		= 0			if (!$cl{rcon});
+	$cv{UseTimestamp}	= 1			if ($cl{timestamp});
 	
-	# Include Extension Modules
-	print "  Loading Extension Modules..\n";
-	my $mod;
-	foreach $mod (@mods) {
-		require $conf{ModuleDir}.'/'.$mod;
-		$mod =~ s/\.mem$//;
-		$mod->init();
-		$handlers{$mod} = {};
-	}
-	print "  Completed Loading Extensions.\n\n";
+	print "[ done ]\n";
+	
+	return %cv;
 }
 
 # void tcpWorker (object socket)
@@ -400,7 +374,7 @@ sub loadModules
 sub tcpWorker
 {
 	my ($sockid) = @_;
-	my $incdata = " ";
+	my $incdata = '';
 	
 	while ($sockid->recv($incdata, 1024)) {
 		print "TCP-> $incdata\n";
@@ -449,7 +423,7 @@ sub netCreateTCPSocket
 #
 sub netCreateUDPSocket
 {
-	print "  Creating UDP listen socket..\t\t";
+	print "\n  Creating UDP listen socket..\t\t";
 	$udpSocket = IO::Socket::INET->new(Proto=>"udp",
 					   LocalHost=>$conf{NetUDPHost},
 					   LocalPort=>$conf{NetUDPPort})
