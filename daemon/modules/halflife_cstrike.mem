@@ -24,7 +24,7 @@ package halflife_cstrike;
 sub init
 {
 	our %r = {};
-#	$r{Player} = gw/\"(.*?)<(\d\d)><(.*?)><(.*?)>\"/;
+#	$r{Player} = gw/\"(.*?)<(\d+)><(.*?)><(.*?)>\"/;
 	print "\t\t\t[ done ]\n";
 	return 1;
 }
@@ -42,11 +42,9 @@ sub playerEvent
 	my ($haveplayer);
 	
 	$line =~ s/^([^\"\(]+)//;
-	$verb = $1;
-#	$verb =~ s/^\s+//;
-	$verb =~ s/\s+$//;
 	$line =~ s/^\s+//;
-#	$line =~ s/\s+$//;
+	$verb = $1;
+	$verb =~ s/\s+$//;
 	
 	my $trackID;
 	if ($main::conf{Mode} eq 'Normal') {
@@ -56,6 +54,7 @@ sub playerEvent
 	} elsif ($main::conf{Mode} eq 'LAN') {
 		$trackID = 'IP';
 	}
+	
 	print  "$player->{Name} '$verb' '$line'\n";
 	if (!$server->{Players}{$player->{$trackID}}) {
 		if (!$server->{Pre}{$player->{Name}}) {
@@ -64,7 +63,7 @@ sub playerEvent
 		$haveplayer = 0;
 	}
 	
-	if ($line =~ s/^\"(.*?)<(\d\d)><(.*?)><(.*?)>\"\s+//) {
+	if ($line =~ s/^\"(.*?)<(\d+)><(.*?)><(.*?)>\"\s+//) {
 		$victim{Name}    = $1;
 		$victim{UID}     = $2;
 		$victim{SteamID} = $3;

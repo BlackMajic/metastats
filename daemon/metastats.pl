@@ -21,9 +21,9 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
 
 #
-# $configfile - system path and name of metastats config file.
+# $configFile - system path and name of metastats config file.
 #
-my $configfile = './metastats.conf';
+my $configFile = './metastats.conf';
 
 #
 #
@@ -43,24 +43,24 @@ use threads;
 Getopt::Long::Configure ("bundling");
 
 $|=1;
-$SIG{'HUP'} = \&sigHUP;
-#$SIG{'INT'} = \&sigDIE;
-#$SIG{__DIE__} = \&sigDIE;
+$SIG{'HUP'}	= \&sigHUP;
+#$SIG{'INT'}	= \&sigDIE;
+#$SIG{__DIE__}	= \&sigDIE;
 
 ##
 ## Initialize variables & defaults
 ##
-our $version = '00.00.73';
-my $db;
+our $version = '00.00.75';
 our %conf;
-my (%cl);
+my $db;
+my %cl;
 
 my $header = "\nMetastats Listener Daemon $version
 --------------------------------------------------
 A statistical data logger for multiplayer games
 and other log producing programmes.
 Copyright (c) 2004-2006 Nick Thomson
-Copyright (c) 2006      Tim McLennan
+Copyright (c) 2006-2007 Tim McLennan
 
 http://metastats.sourceforge.net
 
@@ -113,8 +113,8 @@ to be parsed and inserted into a database of some sort.
       --timestamp		Use timestamp in logs.
       --notimestamp		Use timestamp on database server. (Default)
 
-Note: Options specified here overwrite options in $configfile.
-      See $configfile for more options/information.\n\n";
+Note: Options specified here overwrite options in $configFile.
+      See $configFile for more options/information.\n\n";
 
 # Read command line args into hash so they can be read later
 GetOptions(
@@ -151,7 +151,9 @@ GetOptions(
 die($usage)  if ($cl{help});
 die($header) if ($cl{version});
 
-# Check Dependancies
+##
+## Check Dependancies
+##
 $Config{useithreads} or die "Metastats $version requires ithreads support. Please recompile perl(5.8.1+) and then reload Metastats.\n\n";
 
 ##
@@ -161,11 +163,11 @@ print $header;
 
 # Populate %conf, connect to DB
 %conf = setPerlConfig();
-%conf = setConfConfig($configfile, %conf);
+%conf = setConfConfig($configFile, %conf);
 require "$conf{CoreDir}/main.pm";
 $db = dbConnect();
 %conf = setDBConfig($db, %conf);
-%conf = setCLConfig(%conf, %cl);				#%cl is global?
+%conf = setCLConfig(\%conf, %cl);
 
 # Auto-update Metastats (if set)
 updateMetastats($conf{Update});
@@ -175,17 +177,17 @@ our %handler = getHandlers($db);
 
 # Get a list of our tracked servers
 our (%servers, %serverIPs);
-getTrackedServers($db);						#Returns nothing
+getTrackedServers($db);					#Returns nothing
 
 # Create Sockets
-my ($tcpThread, $udpSocket);
-#my $tcpThread = netCreateTCPSocket();				#Infanant Loop
-my $udpSocket = netCreateUDPSocket();
+my $tcpThread; #= netCreateTCPListenSocket();			#Infanant Loop
+my $udpSocket = (netCreateUDPListenSocket())[0];
+my @udpOutSockets = netCreateUDPSendSocket($db);
 
-print "\n  Now logging using time from ";
-print "logs" if ($conf{UseTimestamp});
-print "db"   if (!$conf{UseTimestamp});
-print " in $conf{Mode} Mode\n";
+print "\nNow logging using time from ";
+print "logs"	if ($conf{UseTimestamp});
+print "the db"	if (!$conf{UseTimestamp});
+print " in $conf{Mode} Mode.\n";
 print "--------------------------------------------------\n\n";
 
 ##
@@ -202,6 +204,10 @@ for (;;) {
 		$udpSocket->recv($incdata, 1024);
 		$UDPHost = $udpSocket->peerhost;
 		$UDPPort = $udpSocket->peerport;
+		
+		foreach my $fwdSocket (@udpOutSockets) {
+			$fwdSocket->send($incdata);
+		}
 	}
 	
 	$serverID = $serverIPs{$UDPHost.':'.$UDPPort};
@@ -225,6 +231,7 @@ for (;;) {
 sub setPerlConfig
 {
 	print "  Reading default config..\t\t";
+	
 	my %cv = {};
 	$cv{CoreDir}		= './core';
 	$cv{ModuleDir}		= './modules';
@@ -241,12 +248,12 @@ sub setPerlConfig
 	$cv{NetUDPPort}		= '27500';
 	$cv{NetTCPHost}		= '';
 	$cv{NetTCPPort}		= '27500';
-	print "[ done ]\n";
 	
+	print "[ done ]\n";
 	return %cv;
 }
 
-# hash parseConfig (string configFile)
+# hash parseConfig (hash config, string configFile)
 #
 # Open the config file, and parse it's contents
 # into a hash
@@ -254,8 +261,8 @@ sub setPerlConfig
 sub setConfConfig
 {
 	my ($configFile, %cv) = @_;
-	
 	print "  Loading configuration file..\t\t";
+	
 	if (-e $configFile) {
 		open (cfg, $configFile) || dieNicely("Cannot open $configFile");
 		while (<cfg>) {
@@ -297,6 +304,7 @@ sub setDBConfig
 {
 	my ($db, %cv) = @_;
 	print "  Loading database configuration..\t";
+	
 	my $query = "SELECT
 			keyname,
 			value
@@ -308,61 +316,59 @@ sub setDBConfig
 	foreach my $result(dbQuery($db, $query)) {
 		$cv{$result->{keyname}} = $result->{value};
 	}
+	
 	print "[ done ]\n";
 	return %cv;
 }
 
 sub setCLConfig
 {
-	my (%cv) = @_;
-	# WTF? %cl is global?
-	#foreach my $i (keys %cl) { print "$i = $cl{$i}\n"; }
-	
-	# Read command line variables %cl into %conf (overwrite)
+	my ($cv, %cm) = @_;
+	my %cv = %$cv;
 	print "  Loading commandline configuration..\t";
-	die($usage)					if ($cl{help});
-	die($header)					if ($cl{version});
-	$cv{Update}		= $cl{update}		if ($cl{update});
-	$cv{LogLevel}		+= $cl{debug}		if ($cl{debug});
-	$cv{LogLevel}		-= $cl{nodebug}		if ($cl{nodebug});
-	$cv{LogLevel}		= 0			if ($conf{Debug} < 0);
-	$cv{Mode}		= $cl{mode}		if ($cl{mode});
-	$cv{LogEcho}		= 1			if ($cl{verbose});
-	$cv{LogEcho}		= 0			if ($cl{quiet});
+	
+	die($usage)					if ($cm{help});
+	die($header)					if ($cm{version});
+	$cv{Update}		= $cm{update}		if ($cm{update});
+	$cv{LogLevel}		+= $cm{debug}		if ($cm{debug});
+	$cv{LogLevel}		-= $cm{nodebug}		if ($cm{nodebug});
+	$cv{LogLevel}		= 0			if ($cv{Debug} < 0);
+	$cv{Mode}		= $cm{mode}		if ($cm{mode});
+	$cv{LogEcho}		= 1			if ($cm{verbose});
+	$cv{LogEcho}		= 0			if ($cm{quiet});
 	# STDIN info
-	$cv{STDIN}		= 1			if ($cl{stdin});
-	$cv{STDIN}		= 0			if (!$cl{stdin});
-	$cv{STDIN}		= 1			if ($cl{s});
-	$cv{LogIP}		= $cl{serverip}		if ($cl{serverip});
-	$cv{LogPort}		= $cl{serverport}	if ($cl{serverport});
-	$cv{NetUDPHost}		= $cl{udpip}		if ($cl{udpip});
-	$cv{NetUDPPort}		= $cl{udpport}		if ($cl{udpport});
-	$cv{NetTCPHost}		= $cl{tcpip}		if ($cl{tcpip});
-	$cv{NetTCPPort}		= $cl{tcpport}		if ($cl{tcpport});
-	$cv{NetUDPHost} 	= "0.0.0.0"		if (!$conf{NetUDPHost});
-	$cv{NetUDPPort} 	= 27500			if (!$conf{NetUDPPort});
-	$cv{NetTCPHost} 	= "0.0.0.0"		if (!$conf{NetTCPHost});
-	$cv{NetTCPPort} 	= 27500			if (!$conf{NetTCPPort});
+	$cv{STDIN}		= 1			if ($cm{stdin});
+	$cv{STDIN}		= 0			if (!$cm{stdin});
+	$cv{STDIN}		= 1			if ($cm{s});
+	$cv{LogIP}		= $cm{serverip}		if ($cm{serverip});
+	$cv{LogPort}		= $cm{serverport}	if ($cm{serverport});
+	$cv{NetUDPHost}		= $cm{udpip}		if ($cm{udpip});
+	$cv{NetUDPPort}		= $cm{udpport}		if ($cm{udpport});
+	$cv{NetTCPHost}		= $cm{tcpip}		if ($cm{tcpip});
+	$cv{NetTCPPort}		= $cm{tcpport}		if ($cm{tcpport});
+	$cv{NetUDPHost} 	= "0.0.0.0"		if (!$cv{NetUDPHost});
+	$cv{NetUDPPort} 	= 27500			if (!$cv{NetUDPPort});
+	$cv{NetTCPHost} 	= "0.0.0.0"		if (!$cv{NetTCPHost});
+	$cv{NetTCPPort} 	= 27500			if (!$cv{NetTCPPort});
 	# Database settings
-	$cv{DBType}		= $cl{dbtype}		if ($cl{dbtype});
-	$cv{DBHost}		= $cl{dbhost}		if ($cl{dbhost});
-	$cv{DBPort}		= $cl{dbport}		if ($cl{dbport});
-	$cv{DBName}		= $cl{dbname}		if ($cl{dbname});
-	$cv{DBPrefix}		= $cl{dbprefix}		if ($cl{dbprefix});
-	$cv{DBUser}		= $cl{dbuser}		if ($cl{dbuser});
-	$cv{DBPass}		= $cl{dbpass}		if ($cl{dbpass});
-	$cv{DeleteDays}		= $cl{deletedays}	if ($cl{deletedays});
+	$cv{DBType}		= $cm{dbtype}		if ($cm{dbtype});
+	$cv{DBHost}		= $cm{dbhost}		if ($cm{dbhost});
+	$cv{DBPort}		= $cm{dbport}		if ($cm{dbport});
+	$cv{DBName}		= $cm{dbname}		if ($cm{dbname});
+	$cv{DBPrefix}		= $cm{dbprefix}		if ($cm{dbprefix});
+	$cv{DBUser}		= $cm{dbuser}		if ($cm{dbuser});
+	$cv{DBPass}		= $cm{dbpass}		if ($cm{dbpass});
+	$cv{DeleteDays}		= $cm{deletedays}	if ($cm{deletedays});
 	# DNS settings
-	$cv{DNSEnable}		= 1			if ($cl{dns});
-	$cv{DNSEnable}		= 0			if (!$cl{dns});
-	$cv{DNSTimeout}		= $cl{dnstimeout}	if ($cl{dnstimeout});
-	$cv{DNSGeoLocate}	= 1			if ($cl{dnslocate});
-	$cv{RconEnable}		= 1			if ($cl{rcon});
-	$cv{RconEnable}		= 0			if (!$cl{rcon});
-	$cv{UseTimestamp}	= 1			if ($cl{timestamp});
+	$cv{DNSEnable}		= 1			if ($cm{dns});
+	$cv{DNSEnable}		= 0			if (!$cm{dns});
+	$cv{DNSTimeout}		= $cm{dnstimeout}	if ($cm{dnstimeout});
+	$cv{DNSGeoLocate}	= 1			if ($cm{dnslocate});
+	$cv{RconEnable}		= 1			if ($cm{rcon});
+	$cv{RconEnable}		= 0			if (!$cm{rcon});
+	$cv{UseTimestamp}	= 1			if ($cm{timestamp});
 	
 	print "[ done ]\n";
-	
 	return %cv;
 }
 
@@ -417,20 +423,58 @@ sub netCreateTCPSocket
 	return $tcpThread;
 }
 
-# void netCreateUDPSocket()
+# array netCreateUDPSocket()
 #
 # Creates UDP Listen Socket
 #
-sub netCreateUDPSocket
+sub netCreateUDPListenSocket
 {
-	print "\n  Creating UDP listen socket..\t\t";
-	$udpSocket = IO::Socket::INET->new(Proto=>"udp",
-					   LocalHost=>$conf{NetUDPHost},
-					   LocalPort=>$conf{NetUDPPort})
-	or die("[ fail ]\n\nCould not create UDP listen socket:\n->$@\n");
-	print "[ done ]\n";
-	print "    Listening on port $conf{NetTCPPort}(UDP).\n";
-	return $udpSocket;
+	my (@inSockets);
+	my ($ip, $port) = ($conf{NetUDPHost}, $conf{NetUDPPort});
+	$ip = '*' if ($conf{NetUDPHost} eq '0.0.0.0');
+	print "\n  Creating UDP listen sockets..\n";
+	
+	# foreach ... {
+		my $udpSocket = IO::Socket::INET->new(  Proto=>"udp",
+							LocalHost=>$conf{NetUDPHost},
+							LocalPort=>$conf{NetUDPPort})
+		or die("[ fail ]\n\nCould not create UDP listen socket:\n-> $@\n\n");
+		
+		push(@inSockets, $udpSocket);
+		print "    Listening to: $ip:$port\n";
+	# }
+	return @inSockets;
+}
+
+sub netCreateUDPSendSocket
+{
+	my ($db) = @_;
+        my ($i, @addrs, @outSockets);
+	
+	my $query = "SELECT
+			value
+		FROM
+			$main::conf{DBPrefix}_core_config
+		WHERE
+			keyname = 'LogForward'";
+	my $result = (&dbQuery($db, $query))[0];
+	@addrs = split(/\s/, $result->{value});
+	
+	if ($addrs[0]) {
+		print "  Creating UDP send sockets..\n";
+		foreach $i (@addrs) {
+			my ($ip, $port) = split(/:/, $i);
+			
+			my $udpSocket = new IO::Socket::INET->new(Proto=>'udp',
+								  PeerAddr=>$ip,
+								  PeerPort=>$port)
+			or die("[ fail ]\n\nCould not create UDP write socket:\n-> $@\n\n");
+			
+			push(@outSockets, $udpSocket);
+			print "    Forwarding to $ip:$port\n";
+		}
+	}
+	return @outSockets;
 }
 
 # void sigHUP()
@@ -440,13 +484,16 @@ sub netCreateUDPSocket
 sub sigHUP
 {
 	print "\n\n  Recieved SIGHUP, restarting..\n";
+	
 	dbDisconnect();
+	
 	setPerlConfig();
 	setConfConfig();
 	dbConnect();
 	setDBConfig();
 	setCLConfig();
 	getTrackedServers();
+	
 	print "  Continuing logging..\n\n";
 }
 
@@ -456,9 +503,10 @@ sub sigHUP
 #
 sub sigDIE
 {
-	# Tidy up!
 	print "\n\n  Recieved SIGDIE\n";
+
 	dbDisconnect();
+	
 	print "  Done.\n\n";
 	die("SIGDIE");
 }

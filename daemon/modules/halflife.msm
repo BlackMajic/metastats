@@ -36,6 +36,7 @@ sub init
 }
 
 # void parse (string server_id, gametype, data)
+# 
 # This function is called by Metastats when data is
 # available for parsing. Metastats checks the sender's
 # IP and port to see which module to send it to, and also
@@ -104,12 +105,12 @@ sub parse
 			$out = "LOG: started logging to $1 for game: $2";
 			$out = "LOG: protocol: $3 / release: $4 / build: $5";
 			$server->{LogFile} = $1;
-# create thread for IO
+# open IO
 		} elsif ($line =~ /^Log file closed/) {
 			# 002.b Log file closed
 			$out = "LOG: closed";
 			$server->{LogFile} = '';
-# write line, close IO, snip thread
+# write line, close IO
 		}
 	} elsif ($line =~  /^(Loading|Started) map \"(.*?)\" (\(CRC \"(.*?)\"\))?/) {
 		if ($1 eq 'Loading') {
@@ -120,7 +121,7 @@ sub parse
 			$out = "MAP: Started $2 (CRC $4)";
 		}
 		$server->{Map} = $2;
-# increment # of times played in db
+# increment # of times map has been played, replace current db value
 	} elsif ($line =~ /^(Bad Rcon|Rcon)\: \"rcon (\d+) \"(.*?)\" (.*)\" from \"(.*?)\"/) {
 		# 004.a Rcon: "rcon challenge "pass" command" from "ip:port"
 		$out = "Bad " if ($1 eq 'Bad Rcon');
@@ -142,10 +143,19 @@ sub parse
 		} elsif ($1 eq 'Bad Rcon') {
 			# 004.b Bad Rcon: "rcon challenge "pass" command" from "ip:port"
 			if ($server->{Rcon} eq $3) {
-				$server->{Rcon} = ''; # avoid getting banned with bad rcon
+				# protect from bad rcon ban
+				my $query = "UPDATE
+						$main::conf{DBPrefix}_core_servers
+					SET
+						server_rcon = ''
+					WHERE
+						server_id = $server->{ID}";
+				main::dbQuery($db, $query);
 				$out .= " -- Protected Metastats from ban";
+				$server->{Rcon} = '';
 			}
 		}
+		
 		if ($main::conf{RconRecord} == 1) {
 			my $ip = (split(/\:/, $5))[0];
 			my $query = "INSERT
@@ -155,16 +165,22 @@ sub parse
 					$utime,
 					$server->{ID},
 					'$server->{Map}',
-					'OK',
+					'$1',
 					'$ip',
 					'$3',
 					'$4')";
-			main::dbQuery($db, $query);
+			main::dbQuery($db, ($query));
 		}
 	} elsif ($line =~ /^Server name is \"(.*)\"/) {
 		# 005. Server name is "hostname"
 		$out = "SERVER NAME: $1";
-# update server[name], update in db too
+		my $query = "UPDATE
+				$main::conf{DBPrefix}_core_servers
+			SET
+				server_name = '$1'
+			WHERE
+				server_id = $server->{ID}";
+		$server->{Name} = $1;
 	} elsif ($line =~ /^Server say \"(.*)\"/) {
 		# 006. Server say "message"
 		$out = "SERVER SAID: $1";

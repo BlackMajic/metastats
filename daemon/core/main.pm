@@ -17,12 +17,12 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
 # 
-# ################################################
-# No  modifications are  nessecary  to this  file;
-# please  see   the  documentation  and  edit  the
-# 'metastats.conf'   file  to   configure   custom
-# settings for this daemon.
-# ################################################
+# ####################################################
+# # No  modifications are  nessecary  to this  file; #
+# # please  see   the  documentation  and  edit  the #
+# # 'metastats.conf'   file  to   configure   custom #
+# # settings for this daemon.                        #
+# ####################################################
 
 use strict;
 use POSIX;
@@ -43,7 +43,7 @@ sub dbConnect
 	return $db;
 }
 
-# array dbQuery (object dbObject; string dbQuery)
+# array dbQuery (object dbObject, string dbQuery)
 # 
 # Queries the database specified in dbObject
 # recieves results, and places them in an array of hashref's
@@ -51,7 +51,7 @@ sub dbConnect
 #
 sub dbQuery
 {
-	my ($dbObject, @queries, $debug) = @_;
+	my ($dbObject, @queries) = @_;
 	my @results = ();
 	my $row = '';
 	my $i;
@@ -74,7 +74,7 @@ sub dbQuery
 	return @results;
 }
 
-# void dbDisconnect()
+# void dbDisconnect(object dbObject)
 #
 # Disconnects from our database
 #
@@ -82,15 +82,16 @@ sub dbDisconnect
 {
 	my ($db) = @_;
 	print "  Disconnecting from database..\t\t";
-        $db->disconnect() or die("[ fail ]\n");
-        print "[ done ]\n";
+	
+	$db->disconnect() or die("[ fail ]\n");
+	
+	print "[ done ]\n";
 }
 
 # updateCache ()
 #
 sub updateCache
 {
-
 }
 
 # array updateGetVersion ()
@@ -169,9 +170,9 @@ sub getTrackedServers
 {
 	my ($db) = @_;
 	my (@ret, %servers, %serverIPs, $total);
-	
 	print "\n  Identifying Tracked Servers..\n";
-# limit query to existing .msm/.mem
+	
+	# limit query to existing .msm/.mem
 	my $query = "SELECT
 			server_id,
 			server_ip,
@@ -202,8 +203,6 @@ sub getTrackedServers
 		# Associate server ip:port with its ID for quicker checking
 		$main::serverIPs{$result->{server_ip}.":".$result->{server_port}} = $result->{server_id};
 	}
-	#foreach my $i (keys %servers) { print "$i = $servers{$i}\n";}
-	#foreach my $i (keys %serverIPs) { print "$i = $serverIPs{$i}\n";}
 	$ret[0] = %servers;
 	$ret[1] = %serverIPs;
 	print "  Tracking [ $total ] Servers.\n";
@@ -211,25 +210,25 @@ sub getTrackedServers
 	return @ret;
 }
 
-# hash getHandlers(dbhandle)
+# hash getHandlers(dbHandle)
 #
 # Querys db for modules and extensions, then checks if the corresponding 
 # files exist. If they do, run init() and load into %handlers (then return it)
 #
 sub getHandlers
 {
-	print "\n  Initializing Modules..\n";
 	my ($db) = @_;
 	my (%handlers, %modules, %extensions);
 	my ($query, $result, $r, $good, $total);
-	
+	print "\n  Initializing Modules and Extensions..\n";
+
 	$query = "SELECT
 			*
 		FROM
 			$main::conf{DBPrefix}_core_modules";
 	
 	foreach $result (&dbQuery($db, $query)) {
-		print "  M:$result->{mod_name}";
+		print "  M: $result->{mod_name}";
 		$total++;
 		if (-e $main::conf{ModuleDir} . '/' . $result->{mod_short} . '.msm') {
 			# Require it
@@ -247,7 +246,7 @@ sub getHandlers
 						mod = '$result->{mod_short}'";
 				foreach $r (&dbQuery($db, $query)) {
 					$total++;
-					print "  E:$r->{ext_name}";
+					print "    E: $r->{ext_name}";
 					if (-e $main::conf{ModuleDir} . '/' . $r->{mod} . '_' . $r->{ext_short} . '.mem') {
 						# Require it
 						require $main::conf{ModuleDir} . '/' . $r->{mod} . '_' . $r->{ext_short} . '.mem';
