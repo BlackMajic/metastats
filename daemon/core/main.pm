@@ -24,9 +24,9 @@
 # # settings for this daemon.                        #
 # ####################################################
 
+package main;
 use strict;
 use POSIX;
-package main;
 
 # void dbConnect()
 #
@@ -38,8 +38,8 @@ sub dbConnect
 	my $db = DBI->connect("DBI:$main::conf{DBType}:".$main::conf{DBName}.":".$main::conf{DBHost}.":".$main::conf{DBPort},
 				 $main::conf{DBUser},
 				 $main::conf{DBPass})
-			or die("[ fail ]\n  Unable to connect to database:\n->$DBI::errstr\n");
-	print "[ done ]\n";
+			or die(boxFail() . "Unable to connect to database:\n->$DBI::errstr\n");
+	print boxOK();
 	return $db;
 }
 
@@ -62,8 +62,8 @@ sub dbQuery
 		my $dbQuery = (split /[^\\];/, $queries[$i])[0];
 		
 		my $dbStatement = $dbObject->prepare($dbQuery)
-					or die("Unable to prepare query");
-		$dbStatement->execute() or die ("Unable to execute statement");
+					or errorMessage("Unable to prepare query: $dbQuery");
+		$dbStatement->execute() or errorMessage("Unable to execute statement: $dbQuery");
 		
 		if ($queries[$i] =~ /SELECT/) {
 			while ($row = $dbStatement->fetchrow_hashref()) {
@@ -83,9 +83,9 @@ sub dbDisconnect
 	my ($db) = @_;
 	print "  Disconnecting from database..\t\t";
 	
-	$db->disconnect() or die("[ fail ]\n");
+	$db->disconnect() or die(boxFail());
 	
-	print "[ done ]\n";
+	boxOK()
 }
 
 # updateCache ()
@@ -139,25 +139,26 @@ sub updateGetVersion
 #
 sub updateMetastats
 {
+	my($update) = @_;
 	print "  Checking for updates..\t\t";
-	if ($main::conf{Update} eq 'stable' || $main::conf{Update} eq 'beta') {
+	if ($update eq "stable" || $update eq "beta") {
 		my ($rMaj, $rMin, $rRev) = updateGetVersion();
 		my ($lMaj, $lMin, $lRev) = split(/\./, $main::version);
 		if ($lMaj < $rMaj) {
-			print "[ done ]\n    **A major update is available**\n";
+			print boxOK() . "    **A major update is available**\n";
 		} elsif ($lMin < $rMin) {
-			print "[ done ]\n    **A minor update is available**\n";
+			print boxOK() . "    **A minor update is available**\n";
 		} elsif ($lRev < $rRev) {
-			print "[ done ]\n    **An update is available**\n";
+			print boxOK() . "    **An update is available**\n";
 		} else {
 			if (!$rMaj && !$rMin && !$rRev) {
-				print "[ fail ]\n    Metastats cannot contact the update server.\n";
+				print boxFail() . "    Metastats cannot contact the update server.\n";
 			} else {
-				print "[ done ]\n    Metastats is up to date.\n";
+				print boxOK() . "    Metastats is up to date.\n";
 			}
 		}
 	} else {
-		print "[ skip ]\n"
+		print boxSkip();
 	}
 }
 
@@ -181,12 +182,14 @@ sub getTrackedServers
 			server_ext,
 			server_rcon,
 			server_name
-		  FROM
-			$main::conf{DBPrefix}_core_servers";
+		     FROM
+			$main::conf{DBPrefix}_core_servers
+		     ORDER BY
+			server_mod, server_ext ASC";
 	
 	foreach my $result (&dbQuery($db, $query)) {
 		$total++;
-		print "    ($result->{server_ext})\t$result->{server_ip}:$result->{server_port}\n";
+		print "    ($result->{server_mod})\t\t$result->{server_ip}:$result->{server_port}\n";
 		$main::servers{$result->{server_id}} = {
 			ID		=> $result->{server_id},
 			IP		=> $result->{server_ip},
@@ -205,7 +208,8 @@ sub getTrackedServers
 	}
 	$ret[0] = %servers;
 	$ret[1] = %serverIPs;
-	print "  Tracking [ $total ] Servers.\n";
+	$total = 0 if (!$total);
+	print "  Tracking [ " . colored($total, "bold") . " ] Servers.\n";
 	
 	return @ret;
 }
@@ -220,7 +224,7 @@ sub getHandlers
 	my ($db) = @_;
 	my (%handlers, %modules, %extensions);
 	my ($query, $result, $r, $good, $total);
-	print "\n  Initializing Modules and Extensions..\n";
+	print "\n  Initializing modules and extensions..\n";
 
 	$query = "SELECT
 			*
@@ -228,7 +232,7 @@ sub getHandlers
 			$main::conf{DBPrefix}_core_modules";
 	
 	foreach $result (&dbQuery($db, $query)) {
-		print "  M: $result->{mod_name}";
+		print "   $result->{mod_long}";
 		$total++;
 		if (-e $main::conf{ModuleDir} . '/' . $result->{mod_short} . '.msm') {
 			# Require it
@@ -243,33 +247,33 @@ sub getHandlers
 					FROM
 						$main::conf{DBPrefix}_core_extensions
 					WHERE
-						mod = '$result->{mod_short}'";
+						module = '$result->{mod_short}'";
 				foreach $r (&dbQuery($db, $query)) {
 					$total++;
-					print "    E: $r->{ext_name}";
-					if (-e $main::conf{ModuleDir} . '/' . $r->{mod} . '_' . $r->{ext_short} . '.mem') {
+					print "    +$r->{ext_long}";
+					if (-e $main::conf{ModuleDir} . '/' . $r->{module} . '_' . $r->{ext_short} . '.mem') {
 						# Require it
-						require $main::conf{ModuleDir} . '/' . $r->{mod} . '_' . $r->{ext_short} . '.mem';
+						require $main::conf{ModuleDir} . '/' . $r->{module} . '_' . $r->{ext_short} . '.mem';
 						
 						# Initialise it
-						if ("$r->{mod}_$r->{ext_short}"->init()) {
+						if ("$r->{module}_$r->{ext_short}"->init()) {
 							$good++;
-							$handlers{"$r->{mod}_$r->{ext_short}"} = {};
+							$handlers{"$r->{module}_$r->{ext_short}"} = {};
 						} else {
-							print "\t\t\t\t[ierror]\n";
+							print "\t\t\t\t" . boxFail();
 						}
 					} else {
-						print "\t\t\t[nofile]\n";
+						print "\t\t\t" . boxNoFile();
 					}
 				}
 			} else {
-				print "\t\t\t\t[ierror]\n";
+				print "\t\t\t\t" . boxFail();
 			}
 		} else {
-			print "\t\t\t\t[nofile]\n";
+			print "\t\t\t\t" . boxNoFile();
 		}
 	}
-	print "  [ $good of $total ] Modules Initialized.\n";
+	print "  [ " . colored("$good of $total", "bold") . " ] Modules Initialized.\n";
 	
 	return %handlers; #, %modules, %extensions);
 }

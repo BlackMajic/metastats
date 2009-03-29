@@ -18,10 +18,12 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 package halflife_tfc;
+use strict;
+use POSIX;
 
 sub init
 {
-	print "\t\t[ done ]\n";
+	print "\t\t" . main::boxOK();
 	return 1;
 }
 
@@ -50,15 +52,15 @@ sub event
 		{
 			# Yes
 			print "TFCMOD: DBQUERY - SELECT KILLS\n";
-			my $query = "SELECT p_kills FROM $conf{DBPrefix}_halflife_players WHERE p_uniqueid = '$s_steamid'";
-			$s_query = $main::db->prepare($query);
-			$s_query->execute();
+			my $query = "SELECT p_kills FROM $main::conf{DBPrefix}_halflife_players WHERE p_uniqueid = '$s_steamid'";
+			$query = $main::db->prepare($query);
+			$query->execute();
 		}
 		else
 		{
 			print "TFCMOD: DBQUERY - INSERT NEW PLAYER\n";
 			my $query = "INSERT
-					INTO $conf{DBPrefix}_halflife_players
+					INTO $main::conf{DBPrefix}_halflife_players
 						(p_uniqueid,
 						p_name,
 						p_address,
@@ -76,15 +78,15 @@ sub event
 						1,
 						0,
 						1000)";
-			$s_query = $main::db->prepare($query);
-			$s_query->execute();
+			$query = $main::db->prepare($query);
+			$query->execute();
 			$main::players{halflife}{$s_steamid}=1;
 		}
 			
 	}
 
 		my $query = "INSERT
-				INTO $conf{DBPrefix}_halflife_playerEvents
+				INTO $main::conf{DBPrefix}_halflife_playerEvents
 					(event_id,
 					event_time,
 					event_type,
@@ -107,8 +109,8 @@ sub event
 					$main::db->quote($o_steamid),
 					$main::db->quote($o_team))";
 		$query =~ s/\n//g;
-		$st_query = $main::db->prepare($query);
-		$st_query->execute();
+		$query = $main::db->prepare($query);
+		$query->execute();
 	return 1;
 }
 

@@ -17,9 +17,9 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
 
+package halflife;
 use strict;
 use POSIX;
-package halflife;
 
 # void init ()
 # This function is called when Metastats loads the module.
@@ -30,7 +30,7 @@ sub init
 {
 	shift;
 	
-	print "\t\t\t\t[ done ]\n";
+	print "\t\t\t\t" . main::boxOK();
 	
 	return 1;
 }
@@ -49,9 +49,18 @@ sub init
 sub parse
 {
 	shift;
-	my ($db, $server, $line) = @_;
-	my ($utime, $htime, $otime, $out);
+	our ($db, $server, $line) = @_;
+	my ($utime, $htime, $otime, $trackID);
+	
 	my $ext = $server->{Extension};
+	
+	if ($main::conf{Mode} eq 'lan') {
+		$trackID = 'IP';
+	} elsif ($main::conf{Mode} eq 'name') {
+		$trackID = 'Name';
+	} else {
+		$trackID = 'SteamID';
+	}
 	
 	$line =~ s/[\r\n\0]//g; # Remove Naughty Characters
 	
@@ -75,12 +84,7 @@ sub parse
 		$htime = "$h:$m:$s $d/$mo/$yr";
 		$otime = "L $mo/$d/$yr - $h:$m:$s:";
 	} else {
-		print "MALFORMED DATA: $line\n";
-		return 0;
-	}
-	
-	if ($server->{NumPlayers} < $main::conf{MinPlayers}) {
-		print "IGNORED (Not MinPlayers): $line\n";
+		main::errorMessage("MALFORMED DATA: $line");
 		return 0;
 	}
 	
@@ -88,48 +92,73 @@ sub parse
 		# 000. // Comment
 		# I am a comment, Ignore me.
 	} elsif ($line =~ /^Server cvar/) {
-		if ($line =~ /^Server cvars start/) {
+		if ($line =~ /^Server cvars start$/) {
 			# 001.a Server cvars start
-			$out = "CVARS: start";
-		} elsif ($line =~ /^Server cvar \"(.*?)\" = \"(.*?)\"/) {
+			
+			main::debugMessage("CVARS: start", 3);
+			
+		} elsif ($line =~ /^Server cvar \"(.*?)\" = \"(.*?)\"$/) {
 			# 001.b Server cvar "var = "value"
-			$out = "CVAR: $1 = $2";
+			# $1 = Var
+			# $2 = Value
+			
 			$ext->cvarEvent($server, $utime, $1, $2);
-		} elsif ($line =~ /^Server cvars end/) {
+			
+		} elsif ($line =~ /^Server cvars end$/) {
 			# 001.c Server cvars end
-			$out = "CVARS: end";
+			
+			main::debugMessage("CVARS: end", 3);
 		}
 	} elsif ($line =~ /^Log/) {
 		if ($line =~ /^Log file started \(file \"(.*?)\"\) \(game \"(.*?)\"\) \(version \"(.*?)\/(.*?)\/(.*?)\"\)/) {
 			# 002.a Log file started (file "name") (game "game") (version "protocol/release/build")
-			$out = "LOG: started logging to $1 for game: $2";
-			$out = "LOG: protocol: $3 / release: $4 / build: $5";
+			# $1 = File
+			# $2 = Game
+			# $3 = Protocol
+			# $4 = Release
+			# $5 = Build
+			
+			my $out = "LOG: started logging to $1 for game: $2\n";
+			$out .= "LOG: protocol: $3 / release: $4 / build: $5";
+			main::debugMessage($out, 3);
+
 			$server->{LogFile} = $1;
 # open IO
 		} elsif ($line =~ /^Log file closed/) {
 			# 002.b Log file closed
-			$out = "LOG: closed";
+			
+			main::debugMessage("LOG: file closed", 3);
 			$server->{LogFile} = '';
 # write line, close IO
 		}
 	} elsif ($line =~  /^(Loading|Started) map \"(.*?)\" (\(CRC \"(.*?)\"\))?/) {
+		# $1 = [Loading|Started]
+		# $2 = Map name
+		# $3 = "(CRC "...")"
+		# $4 = CRC value
+		
 		if ($1 eq 'Loading') {
 			# 003.a Loading map "map"
-			$out = "MAP: Loading $2";
+			
+			main::debugMessage("MAP: Loading $2", 2);
 		} elsif ($1 eq 'Started') {
 			# 003.b Started map "map" (CRC "crc")
-			$out = "MAP: Started $2 (CRC $4)";
+			
+			main::debugMessage("MAP: Started $2 (CRC $4)", 2);
 		}
-		$server->{Map} = $2;
-# increment # of times map has been played, replace current db value
+		$ext->mapEvent($1, $2);
 	} elsif ($line =~ /^(Bad Rcon|Rcon)\: \"rcon (\d+) \"(.*?)\" (.*)\" from \"(.*?)\"/) {
-		# 004.a Rcon: "rcon challenge "pass" command" from "ip:port"
-		$out = "Bad " if ($1 eq 'Bad Rcon');
-		$out .= "Rcon: '$4' from $5 (pass: $3)";
+		# 004.a     Rcon: "rcon challenge "pass" command" from "ip:port"
+		# 004.b Bad Rcon: "rcon challenge "pass" command" from "ip:port"
+		# $1 = [Bad Rcon|Rcon]
+		# $2 = challenge
+		# $3 = password
+		# $4 = command
+		# $5 = ip:port
 		
 		if ($1 eq 'Rcon') {
-			if ($server->{Rcon} ne $3) {
-				# if different, update db/$server
+			# Stored and used passwords are different, update database
+			if ($server->{Rcon} ne $3 && !$server->{IgnoreRcon}) {
 				my $query = "UPDATE
 						$main::conf{DBPrefix}_core_servers
 					SET
@@ -137,13 +166,12 @@ sub parse
 					WHERE
 						server_id = $server->{ID}";
 				main::dbQuery($db, $query);
-				$out .= " -- Updated Rcon password from $server->{Rcon}";
+				main::debugMessage(" -- Updated Rcon password from $server->{Rcon}");
 				$server->{Rcon} = $3;
 			}
 		} elsif ($1 eq 'Bad Rcon') {
-			# 004.b Bad Rcon: "rcon challenge "pass" command" from "ip:port"
 			if ($server->{Rcon} eq $3) {
-				# protect from bad rcon ban
+				# protect from rcon ban
 				my $query = "UPDATE
 						$main::conf{DBPrefix}_core_servers
 					SET
@@ -151,11 +179,10 @@ sub parse
 					WHERE
 						server_id = $server->{ID}";
 				main::dbQuery($db, $query);
-				$out .= " -- Protected Metastats from ban";
+				main::debugMessage(" -- Protected Metastats from ban");
 				$server->{Rcon} = '';
 			}
 		}
-		
 		if ($main::conf{RconRecord} == 1) {
 			my $ip = (split(/\:/, $5))[0];
 			my $query = "INSERT
@@ -173,7 +200,9 @@ sub parse
 		}
 	} elsif ($line =~ /^Server name is \"(.*)\"/) {
 		# 005. Server name is "hostname"
-		$out = "SERVER NAME: $1";
+		# $1 = hostname
+		
+		main::debugMessage("SERVER NAME: $1");
 		my $query = "UPDATE
 				$main::conf{DBPrefix}_core_servers
 			SET
@@ -183,36 +212,117 @@ sub parse
 		$server->{Name} = $1;
 	} elsif ($line =~ /^Server say \"(.*)\"/) {
 		# 006. Server say "message"
-		$out = "SERVER SAID: $1";
+		# $1 = message
+		
+		main::debugMessage("SERVER SAID: $1");
+	} elsif ($line =~ /^Team/) {
+		# 061. Team "team" triggered "action"
+		# 064. Team "team" formed alliance with team "team"
+		# 065. Team "team" scored "score" with "numplayers" players
+		
+		$line =~ s/^Team \"(.*?)\"\s+//;
+		# Pass the team and the rest of the line to the ext.
+		$ext->teamEvent($server, $utime, $1, $line);
+		
+		main::debugMessage("Handed to $ext", 3);
 	} elsif ($line =~ /^World triggered \"(.*?)\"/) {
 		# 062. World triggered "action"
-		$out = "WORLD: triggered $1";
-	} elsif ($line =~ /^Team/) {
-		$line =~ s/^Team \"(.*?)\"\s+//;
-		$ext->teamEvent($server, $utime, $1, $line);
-		$out = "Handed to $ext";
+		# $1 = action
+		
+		$ext->worldEvent($server, $utime, $1);
+		main::debugMessage("Handed to $ext", 3);
 	} elsif ($line =~ /^(\"|Player|Kick)/) {
-		# 050-060, 066-069
-		my %player = {};
+		# 050-060, 063, 066-069
+		
+		my %player = ();
 		if ($1 eq 'Player') {
 			$line =~ s/^Player \"(.*?)<(.*?)><(.*?)><(.*?)>\"\s*//;
-			($player{Name}, $player{UID}, $player{SteamID}, $player{Team}) = ($1, $2, $3, $4);
-		} elsif ($1 eq '"') {
-			$line =~ s/^\"(.*?)<(.*?)><(.*?)><(.*?)>\"\s*//;
 			($player{Name}, $player{UID}, $player{SteamID}, $player{Team}) = ($1, $2, $3, $4);
 		} elsif ($1 eq 'Kick') {
 			$line =~ s/^Kick: \"(.*?)<(.*?)><(.*?)><(.*?)>\"\s*//;
 			($player{Name}, $player{UID}, $player{SteamID}, $player{Team}) = ($1, $2, $3, $4);
+		} elsif ($1 eq '"') {
+			$line =~ s/^\"(.*?)<(.*?)><(.*?)><(.*?)>\"\s*//;
+			($player{Name}, $player{UID}, $player{SteamID}, $player{Team}) = ($1, $2, $3, $4);
+			
+			if ($line =~ s/^connected, address\s*\"([\d.]+)\:(\d+)\"//) {
+				$player{IP}   = $1;
+				$player{Port} = $2;
+				main::debugMessage("CONNECTED: $player{Name} <$player{$trackID}> ($player{IP})");
+				my $query = "SELECT
+						player_id
+					FROM
+						$main::conf{DBPrefix}_halflife_playeruniqueids
+					WHERE
+						unique_id = '$player{$trackID}'
+					AND
+						module = '$server->{Extension}'";
+				my $result = (main::dbQuery($db, $query))[0];
+				$player{ID} = $result->{player_id};
+				
+				if ($result->{rows} < 1) {
+					# New Player!
+					$query = "INSERT INTO
+							$main::conf{DBPrefix}_halflife_players
+							(last_name)
+						VALUES
+							('$player{Name}')";
+					main::dbQuery($db, $query);
+					$query = "SELECT LAST_INSERT_ID()";
+					$result = (main::dbQuery($db, $query))[0];
+					$player{ID} = $result->{'last_insert_id()'};
+					$query = "INSERT INTO
+							$main::conf{DBPrefix}_halflife_playeruniqueids
+						VALUES ('$player{ID}',
+							'$player{$trackID}',
+							'$server->{Extension}',
+							'');
+						
+						INSERT INTO
+							$main::conf{DBPrefix}_halflife_playernames
+						VALUES ($player{ID},
+							'$player{$trackID}',
+							UNIX_TIMESTAMP(),
+							1,
+							0,0,0)";
+					main::dbQuery($db, $query);
+					$server->{'Players'}{$trackID} = \%player;
+					main::debugMessage("Added new player: $player{Name}");
+				} else {
+					# Old news
+					$query = "UPDATE
+							$main::conf{DBPrefix}_halflife_playernames
+						SET
+							lastuse = UNIX_TIMESTAMP(),
+							numuses = numuses + 1
+						WHERE
+							player_id = $player{ID}
+						AND	name = $player{Name}";
+					main::dbQuery($db, $query);
+					$server->{Players}{$trackID} = %player;
+				}
+				return 0;
+			} elsif ($line =~ s/^STEAM USERID verified//) {
+				# We should actually do most of the connect stuff here.
+				return 0;
+			} elsif ($line =~ /^entered the game/) {
+				#$server->{Players}{$player{$trackID}} = $server->{Preconnect}{$player{$trackID}};
+				$server->{NumPlayers}++;
+				main::debugMessage("NumPlayers: $server->{NumPlayers}");
+			} elsif ($line =~ /^disconnected/) {
+				delete $server->{Players}{$player{$trackID}};
+				$server->{NumPlayers}--;
+				main::debugMessage("NumPlayers: $server->{NumPlayers}");
+			}
 		}
+		main::errorMessage($line);
+		main::debugMessage("Handed to $ext", 3);
 		$ext->playerEvent($db, $server, $utime, \%player, $line);
-		$out = "Handed to $ext";
 	} else {
-		$out = "UNRECOGNISED: $line";
+		main::errorMessage("UNRECOGNISED: $line");
 	}
 # access $writeThread for disc IO
 # write "$otime $line\n"
-	
-	print "-> $out\n\n\n";
 	
 	return 1;
 }

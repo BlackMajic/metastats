@@ -35,11 +35,12 @@ use strict;
 use POSIX;
 use Config;
 use Getopt::Long;
+use Term::ANSIColor;
 use Time::Local;
 use Digest::MD5;
 use DBI;
 use IO::Socket;
-use threads;
+use Thread::Pool;
 Getopt::Long::Configure ("bundling");
 
 $|=1;
@@ -60,7 +61,7 @@ my $header = "\nMetastats Listener Daemon $version
 A statistical data logger for multiplayer games
 and other log producing programmes.
 Copyright (c) 2004-2006 Nick Thomson
-Copyright (c) 2006-2007 Tim McLennan
+Copyright (c) 2006-2009 Tim McLennan
 
 http://metastats.sourceforge.net
 
@@ -78,40 +79,41 @@ if ($ENV{OS} =~ /indows/ || $ENV{OSTYPE} =~ /indows/) {
 $usage .= "Recieve streamed logs from one or more gameservers
 to be parsed and inserted into a database of some sort.
 
-  -h, --help			Display this notice.
-  -V, --version			Display version information.
-  -u, --update=TYPE		Update Metastats to a [stable|beta] build.
-  -d, --debug			Enable debug output (-dd for level 2)
-  -n, --nodebug			Disables debug output (-nn for a lower level)
-  -m, --mode=MODE		Tracking mode (Normal, NameTrack, LAN)
-  -v, --verbose			Print debug information to console.
-  -q, --quiet			Silences above.
-  -s, --stdin			Read logs from <STDIN> instead of a stream.
-      --nostdin			Read logs from UDP/TCP stream.
-  -i, --server-ip		IP Address of the server from which the 
-				  logs you are reading from <STDIN> came from.
-  -p, --server-port		Port of the server you are reading from <STDIN>.
-      --udp-ip			Interface to listen for incoming UDP logs on.
-      --udp-port		Port to listen for incoming UDP logs on.
-      --tcp-ip			Interface to listen for incoming TCP logs on.
-      --tcp-port		Port to listen for incoming TCP logs on.
-      --db-type=TYPE		Type of database to connect to.
-      --db-host=HOST		Database server ip address or hostname.
-      --db-port=PORT		Database server port.
-      --db-name=DATABASE	Name of the database to connect to.
-      --db-prefix=PREFIX	Table prefix in use on database.
-      --db-user=USERNAME	Database username.
-      --db-pass=PASSWORD	Database password.
-      --delete-days=DAYS	Number of days to store kill data. (Default 7)
-      --dns			Enable DNS hostname resolution.
-      --nodns			Disables ALL DNS features.
-      --dns-timeout=TIME	Timout DNS queries after TIME seconds.
-      --dns-locate		Enable GeoLocation DNS feature.
-      --nodns-locate		Disables above.
-      --rcon			Send rcon commands to logged servers.
-      --norcon			Disables above.
-      --timestamp		Use timestamp in logs.
-      --notimestamp		Use timestamp on database server. (Default)
+  -h, --help		   Display this notice.
+  -v, --version		   Display version information.
+  -u, --update=TYPE	   Update Metastats. [stable|beta|skip]
+  -d, --debug		   Enable debug output(-dd for level 2 -ddd for 3, etc.)
+  -n, --nodebug		   Disables debug output (-nn for a lower level)
+			     debug lvl 0 will only produce output during
+			     initialization, and upon any errors.
+  -m, --mode=MODE	   Tracking mode [normal|name|lan]
+  -s, --stdin		   Read logs from <STDIN> instead of the network.
+      --nostdin		   Read logs from UDP/TCP stream.
+  -i, --server-ip	   IP address of the server from which the logs you are
+			     curently reading from <STDIN> came from.
+  -p, --server-port	   Port of the server you are reading logs from <STDIN>.
+      --udp-ip		   Interface to listen for incoming UDP logs on.
+      --udp-port	   Port to listen for incoming UDP logs on.
+      --tcp-ip		   Interface to listen for incoming TCP logs on.
+      --tcp-port	   Port to listen for incoming TCP logs on.
+      --db-type=TYPE	   Type of database to connect to [mysql].
+      --db-host=HOST	   Database server ip address or hostname.
+      --db-port=PORT	   Database server port.
+      --db-name=DATABASE   Name of the database to connect to.
+      --db-prefix=PREFIX   Table prefix in use on database.
+      --db-user=USERNAME   Database username.
+      --db-pass=PASSWORD   Database password.
+      --delete-days=DAYS   Number of days to store kill data. (Default 7)
+      --dns		   Enable DNS features, hostname resolution, etc.
+      --nodns		   Disables ALL DNS features.
+      --dns-timeout=TIME   Timout DNS queries after TIME seconds.
+      --dns-locate	   Enable GeoLocation DNS feature.
+      --nodns-locate	   Disables above (Default).
+      --rcon		   Send rcon commands to logged servers. (Default)
+      --norcon		   Disables above.
+      --timestamp	   Use timestamp in logs.
+      --notimestamp	   Use timestamp on database server. (Default)
+      --maxthreads	   Maximum number of threds to run. (Default 10)
 
 Note: Options specified here overwrite options in $configFile.
       See $configFile for more options/information.\n\n";
@@ -119,13 +121,11 @@ Note: Options specified here overwrite options in $configFile.
 # Read command line args into hash so they can be read later
 GetOptions(
 	"help|h|?"		=> \$cl{help},
-	"version|V"		=> \$cl{version},
+	"version|v"		=> \$cl{version},
 	"update|u=s"		=> \$cl{update},
 	"debug|d+"		=> \$cl{debug},
 	"nodebug|n+"		=> \$cl{nodebug},
 	"mode|m=s"		=> \$cl{mode},
-	"verbose|v"		=> \$cl{verbose},
-	"quiet|q"		=> \$cl{quiet},
 	"stdin!"		=> \$cl{stdin},
 	"s"			=> \$cl{stdin},
 	"server-ip|i=s"		=> \$cl{serverip},
@@ -146,7 +146,8 @@ GetOptions(
 	"dns-timeout=i"		=> \$cl{dnstimeout},
 	"dns-locate!"		=> \$cl{dnslocate},
 	"rcon!"			=> \$cl{rcon},
-	"timestamp!"		=> \$cl{timestamp}
+	"timestamp!"		=> \$cl{timestamp},
+	"maxthreads"		=> \$cl{maxthreads}
 ) or exit();
 die($usage)  if ($cl{help});
 die($header) if ($cl{version});
@@ -154,7 +155,7 @@ die($header) if ($cl{version});
 ##
 ## Check Dependancies
 ##
-$Config{useithreads} or die "Metastats $version requires ithreads support. Please recompile perl(5.8.1+) and then reload Metastats.\n\n";
+$Config{useithreads} or die(colored("\nMetastats $version requires ithreads support. Please recompile perl(5.8.1+) and then reload Metastats.\n\n", "red"));
 
 ##
 ## Begin Execution
@@ -165,6 +166,7 @@ print $header;
 %conf = setPerlConfig();
 %conf = setConfConfig($configFile, %conf);
 require "$conf{CoreDir}/main.pm";
+%conf = setCLConfig(\%conf, %cl);
 $db = dbConnect();
 %conf = setDBConfig($db, %conf);
 %conf = setCLConfig(\%conf, %cl);
@@ -184,10 +186,14 @@ my $tcpThread; #= netCreateTCPListenSocket();			#Infanant Loop
 my $udpSocket = (netCreateUDPListenSocket())[0];
 my @udpOutSockets = netCreateUDPSendSocket($db);
 
-print "\nNow logging using time from ";
-print "logs"	if ($conf{UseTimestamp});
-print "the db"	if (!$conf{UseTimestamp});
-print " in $conf{Mode} Mode.\n";
+# Initialize Threads
+our $threadPool = Thread::Pool->new({do => sub{}, workers => $conf{Workers}});
+print "  [ " . colored("$conf{Workers} of $conf{MaxThreads}", "bold") . " ] thread workers initialized.\n";
+
+print "\nNow logging using ";
+print colored("log time", "bold")	if ($conf{UseTimestamp});
+print colored("database time", "bold")	if (!$conf{UseTimestamp});
+print " in " . colored($conf{Mode}, "bold") . " mode.\n";
 print "--------------------------------------------------\n\n";
 
 ##
@@ -204,19 +210,21 @@ for (;;) {
 		$udpSocket->recv($incdata, 1024);
 		$UDPHost = $udpSocket->peerhost;
 		$UDPPort = $udpSocket->peerport;
-		
-		foreach my $fwdSocket (@udpOutSockets) {
-			$fwdSocket->send($incdata);
-		}
 	}
 	
 	$serverID = $serverIPs{$UDPHost.':'.$UDPPort};
 	
 	if ($serverID) {
-		print "Recognised $servers{$serverID}->{Module} server $UDPHost:$UDPPort\n";
-		$servers{$serverID}->{Module}->parse($db, $servers{$serverID}, $incdata);
+		if (!$conf{STDIN}) {
+			foreach my $fwdSocket (@udpOutSockets) {
+				$fwdSocket->send($incdata);
+			}
+		}
+		debugMessage("Recognised $servers{$serverID}->{Module} server $UDPHost:$UDPPort", 6);
+		debugMessage($incdata, 4);
+		$threadPool->job($servers{$serverID}->{Module}->parse($db, $servers{$serverID}, $incdata));
 	} else {
-		print "--> Unrecognised server $UDPHost:$UDPPort\n";
+		errorMessage("Unrecognised server: $UDPHost:$UDPPort");
 	}
 }
 
@@ -248,8 +256,10 @@ sub setPerlConfig
 	$cv{NetUDPPort}		= '27500';
 	$cv{NetTCPHost}		= '';
 	$cv{NetTCPPort}		= '27500';
+	$cv{MaxThreads}		= 10;
+	$cv{Workers}		= $cv{MaxThreads}/5;
 	
-	print "[ done ]\n";
+	print boxOK();
 	return %cv;
 }
 
@@ -287,10 +297,10 @@ sub setConfConfig
 				$cv{$var} = $val if (($var) && ($val));
 			}
 		}
-		print "[ done ]\n";
+		print boxOK();
 	} else {
-		print "[ fail ]\n\n";
-		die "The configuration file was not found.\nPlease check that $configFile exists.";
+		print boxFail() . "\n";
+		die("\nThe configuration file was not found.\nPlease check that $configFile exists.\n");
 	}
 	
 	return %cv;
@@ -317,7 +327,7 @@ sub setDBConfig
 		$cv{$result->{keyname}} = $result->{value};
 	}
 	
-	print "[ done ]\n";
+	print boxOK();
 	return %cv;
 }
 
@@ -368,7 +378,7 @@ sub setCLConfig
 	$cv{RconEnable}		= 0			if (!$cm{rcon});
 	$cv{UseTimestamp}	= 1			if ($cm{timestamp});
 	
-	print "[ done ]\n";
+	print boxOK();
 	return %cv;
 }
 
@@ -383,9 +393,9 @@ sub tcpWorker
 	my $incdata = '';
 	
 	while ($sockid->recv($incdata, 1024)) {
-		print "TCP-> $incdata\n";
+		debugMessage("TCP-> $incdata", 2);
 	}
-	print "  Worker thread exiting\n";
+	debugMessage("Worker thread exiting", 3);
 }
 
 # void tcpListener ()
@@ -394,20 +404,19 @@ sub tcpWorker
 #
 sub tcpListener
 {
-	print "[ done ]\n    Creating TCP listen socket..\t";
+	print boxOK() . "    Creating TCP listen socket..\t";
 	my $tcpSocket = IO::Socket::INET->new(Proto=>"tcp",
 						Listen=>1,
 						Reuse=>1,
 						LocalHost=>$conf{NetTCPHost},
 						LocalPort=>$conf{NetTCPPort})
-	or die("[ fail ]\n\nCould not create TCP listen socket:\n->$@\n");
-	print "[ done ]\n";
-	print "    Listening on port $conf{NetTCPPort}(TCP).\n";
+	or die(boxFail() . "Could not create TCP listen socket:\n->$@\n");
+	print boxOK() . "    Listening on port $conf{NetTCPPort}(TCP).\n";
 	
 	for (;;) {
 		my $tlsock_new = $tcpSocket->accept();
-		print "  ** Incoming TCP connection from ".$tlsock_new->peerhost.":".$tlsock_new->peerport."..\n";
-		print "  Launching new worker thread..\n";
+		debugMessage("Incoming TCP connection from ".$tlsock_new->peerhost.":".$tlsock_new->peerport."..", 3);
+		debugMessage("Launching new worker thread..", 3);
 		my $tlnID = threads->new(\&tcpWorker($tlsock_new));
 	}
 }
@@ -438,7 +447,7 @@ sub netCreateUDPListenSocket
 		my $udpSocket = IO::Socket::INET->new(  Proto=>"udp",
 							LocalHost=>$conf{NetUDPHost},
 							LocalPort=>$conf{NetUDPPort})
-		or die("[ fail ]\n\nCould not create UDP listen socket:\n-> $@\n\n");
+		or die(boxFail() . "\nCould not create UDP listen socket:\n-> $@\n\n");
 		
 		push(@inSockets, $udpSocket);
 		print "    Listening to: $ip:$port\n";
@@ -468,10 +477,10 @@ sub netCreateUDPSendSocket
 			my $udpSocket = new IO::Socket::INET->new(Proto=>'udp',
 								  PeerAddr=>$ip,
 								  PeerPort=>$port)
-			or die("[ fail ]\n\nCould not create UDP write socket:\n-> $@\n\n");
+			or die(boxFail() . "\nCould not create UDP write socket:\n-> $@\n\n");
 			
 			push(@outSockets, $udpSocket);
-			print "    Forwarding to $ip:$port\n";
+			debugMessage("Forwarding to $ip:$port", 3);
 		}
 	}
 	return @outSockets;
@@ -507,6 +516,47 @@ sub sigDIE
 
 	dbDisconnect();
 	
-	print "  Done.\n\n";
+	print boxOK() . "\n";
 	die("SIGDIE");
+}
+
+sub boxOK
+{
+	return "[  " . colored("ok", "green") . "  ]\n";
+}
+
+sub boxFail
+{
+	return "[ " . colored("fail", "red") . " ]\n";
+}
+
+sub boxSkip
+{
+	return "[ " . colored("skip", "yellow") . " ]\n";
+}
+
+sub boxNoFile
+{
+	return "[" . colored("nofile", "yellow") . "]\n";
+}
+
+sub errorMessage
+{
+	my ($error) = @_;
+	
+	print colored("\n\n$error\n\n", "red");
+}
+
+sub debugMessage
+{
+	my ($line, $level) = @_;
+	my ($i, $out);
+	
+	$level = 1 if (!$level);
+	if ($level >= $conf{Debug}) {
+		for ($i; $i < $level; $i++) {
+			$out .= ">";
+		}
+		print $out . " $line\n";
+	}
 }

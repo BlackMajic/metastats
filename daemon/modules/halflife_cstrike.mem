@@ -25,11 +25,11 @@ sub init
 {
 	our %r = {};
 #	$r{Player} = gw/\"(.*?)<(\d+)><(.*?)><(.*?)>\"/;
-	print "\t\t\t[ done ]\n";
+	print "\t\t\t" . main::boxOK();
 	return 1;
 }
 
-# void event (string event_time, event_type, event_object; array @player1, @player2)
+# void playerEvent(string event_time, event_type, event_object; array @player1, @player2)
 # This function is called by the gamesupport module when an event happens.
 # The parameters take different contents based on event type, and may not always be filled.
 # eg. with RCON, event_time = time, event_type = 'RCON', and @player1 = ('command', 'from', 'password')
@@ -38,32 +38,22 @@ sub playerEvent
 {
 	shift;
 	my ($db, $server, $utime, $player, $line) = @_;
-	my ($verb, %victim, $action, $message, $weapon, %properties, $out);
-	my ($haveplayer);
-	
-	$line =~ s/^([^\"\(]+)//;
-	$line =~ s/^\s+//;
-	$verb = $1;
-	$verb =~ s/\s+$//;
+	my ($verb, %victim, $action, $message, $weapon, %properties);
 	
 	my $trackID;
-	if ($main::conf{Mode} eq 'Normal') {
-		$trackID = 'SteamID';
-	} elsif ($main::conf{Mode} eq 'NameTrack') {
+	if ($main::conf{Mode} eq 'name') {
 		$trackID = 'Name';
-	} elsif ($main::conf{Mode} eq 'LAN') {
+	} elsif ($main::conf{Mode} eq 'lan') {
 		$trackID = 'IP';
+	} else {
+		$trackID = 'SteamID';
 	}
+	main::errorMessage($line);
+	$line =~ s/^([^\"\(]+)\s*//;
+	$verb = $1;
 	
-	print  "$player->{Name} '$verb' '$line'\n";
-	if (!$server->{Players}{$player->{$trackID}}) {
-		if (!$server->{Pre}{$player->{Name}}) {
-			$out .= "UNRECOGNISED PLAYER: $player->{Name}\n";
-		}
-		$haveplayer = 0;
-	}
-	
-	if ($line =~ s/^\"(.*?)<(\d+)><(.*?)><(.*?)>\"\s+//) {
+	print main::colored("'$verb' ", "cyan") . main::colored("'$line'", "yellow");
+	if ($line =~ s/^\"(.*?)<(\d+)><(.*?)><(.*?)>\"//) {
 		$victim{Name}    = $1;
 		$victim{UID}     = $2;
 		$victim{SteamID} = $3;
@@ -72,13 +62,14 @@ sub playerEvent
 		if ($verb eq 'killed' || $verb eq 'attacked') {
 			# 057. Kills
 			# 058. Injuring
+			
 			$line =~ /^with \"(.*?)\" ?(.*?)$/;
 			$weapon     = $1;
 			%properties = getProperties($2);
 			if ($verb eq 'killed') {
-				$out .= "$player->{Name} killed $victim{Name} with $weapon\n";
+				main::debugMessage("$player->{Name} killed $victim{Name} with $weapon");
 			} else {
-				$out .= "$player->{Name} attacked $victim{Name} with $weapon for $properties{damage} damage\n";
+				main::debugMessage("$player->{Name} attacked $victim{Name} with $weapon for $properties{damage} damage");
 			}
 		}
 	} else {
@@ -90,115 +81,86 @@ sub playerEvent
 				$victim{SteamID} = $4;
 				$victim{Team}    = $5;
 				%properties      = getProperties($6);
-				$out .= "$player->{Name} triggered $action against $victim{Name}";
+				main::debugMessage("$player->{Name} triggered $action against $victim{Name}");
 # reward player, reward victim?
 			} elsif ($line =~ /^\"(.*?)\" (.*?)$/) {
 				$action     = $1;
 				%properties = getProperties($2);
-				$out .= "$player->{Name} triggered $action";# reward player
+				main::debugMessage("$player->{Name} triggered $action");
+# reward player
 			}
-		} elsif ($verb eq 'connected, address') {
-			# 050. Connect
-			$line =~ /\"(.*?)\:(\d+)\"$/;
-			$player->{IP}   = $1;
-			$player->{Port} = $2;
-			$out .= "CONNECT: $player->{Name} ($player->{IP}:$player->{Port})\n";
-# new player? add to db & validation list
-# add to validation list
-			$server->{Preconnect}{$player->{UID}} = $player;
-# add to connects db with $utime for breakdown
-			my $query = "INSERT INTO
-					$main::conf{DBPrefix}_halflife_events_connects
-				VALUES ('',
-					$utime,
-					$server->{ID},
-					'$server->{Map}',
-					'$player->{ID}',
-					'$player->{IP}',
-					'',
-					'')";
-			main::dbQuery($db, $query);
-		} elsif ($verb eq 'STEAM USERID validated') {
-			$out .= "got $player->{Name}'s USERID";
-			my $query = "SELECT
-					player_id
-				FROM
-					$main::conf{DBPrefix}_halflife_playeruniqueids
-				WHERE
-					unique_id = '$player->{SteamID}'
-				AND
-					mod = 'halflife_cstrike'";
-			my $result = (main::dbQuery($db, $query))[0];
-			$player->{ID} = $result->{player_id};
-			if (!$player->{ID}) {
-				# New Player!
-				my $query = "INSERT INTO
-						$main::conf{DBPrefix}_halflife_players
-						(last_name)
-					VALUES ('$player->{Name}')";
-				main::dbQuery($db, $query);
-				my $query = "SELECT LAST_INSERT_ID()";
-				my $result = (main::dbQuery($db, $query))[0];
-				$player->{ID} = $result->{'last_insert_id()'};
-				my $query = "INSERT INTO
-						$main::conf{DBPrefix}_halflife_playeruniqueids
-					VALUES ('$player->{ID}',
-						'$player->{SteamID}',
-						'halflife_cstrike',
-						'')";
-				main::dbQuery($db, $query);
-			}
-			$server->{Players}{$trackID} = $player; # update %server's version of player's uniqueid, begin tracking him
-			delete $server->{Preconnect}{$player->{UID}}; # remove from temp hash
-		} elsif ($verb eq 'entered the game') {
-			$server->{NumPlayers}++;
-			$out .= "$player->{Name} entered the game";
-		} elsif ($verb eq 'disconnected') {
-			$line =~ /(.*?)$/;
-			%properties = getProperties($1);
-			$server->{NumPlyaers}--;
-			$out .= "$player->{Name} disconnected ($properties{reason})";
-		} elsif ($verb eq 'was kicked by') {
-			$line =~ /\"(.*?)\" (.*?)$/;
-			my $kicker  = $1;
-			%properties = getProperties($2);
-# add to #of kicks for player
-			$server->{NumPlayers}--;
-			$out .= "$player->{Name} was kicked by $kicker ($properties{reason})"
 		} elsif ($verb eq 'committed suicide with') {
 			$line =~ /\"(.*?)\"$/;
 			$weapon = $1;
 # suicides++, lower skill by weapon modifier
-			$out .= "$player->{Name} committed suicide with $weapon";
+			main::debugMessage("$player->{Name} committed suicide with $weapon");
 		} elsif ($verb eq 'joined team') {
 			# 054. Team selection
 			$line =~ /\"(.*?)\"$/;
 			$player->{Team} = $1;
 # update %server's team list, update db
-			$out .= "$player->{Name} joined $1";
+			main::debugMessage("$player->{Name} joined $1");
 		} elsif ($verb eq 'changed role to') {
 			# 055. Role selection
 			$line =~ /\"(.*?)\"$/;
 			$player->{Role} = $1;
 # update db
-			$out .= "$player->{Name} changed role to $1";
-		} elsif ($verb eq 'changed name to') {
-			# 056. Change Name
-			$line =~ /\"(.*?)\"$/;
-# if in nametrack, reset skill to new name
-			$out .= "$player->{Name} changed name to $1";
-			$player->{Name} = $1;
+			main::debugMessage("$player->{Name} changed role to $1");
 		} elsif ($verb eq 'say' || $verb eq 'say_team') {
 			$line =~ /\"(.*?)\" ?(.*)?$/;
 			$message    = $1;
 			%properties = getProperties($2);
-			$out .= "$player->{Name} said $message";
+			main::debugMessage("$player->{Name} said $message");
 # Call talk handler module
+		} elsif ($verb eq 'changed name to') {
+			$line =~ s/^\"(.+)\"$//;
+			# Query
+			my $query = "SELECT
+					player_id,
+					numuses
+				FROM
+					$main::conf{DBPrefix}_halflife_playernames
+				WHERE
+					player_id = '$player->{ID}'
+				AND
+					name = '$player->{Name}'";
+			my $result = (main::dbQuery($db, $query))[0];
+			if ($result->{rows} < 1) {
+				$query = "INSERT INTO
+						$main::conf{DBPrefix}_halflife_playernames
+					VALUES ('$player->{ID}',
+						'$1',
+						UNIX_TIMESTAMP(),
+						1,
+						0,
+						0,
+						0";
+			} else {
+				$query = "UPDATE
+						$main::conf{DBPrefix}_PlayerNames
+					SET
+						lastuse = UNIX_TIMESTAMP(),
+						numuses = numuses+1
+					WHERE
+						player_id = '$player->{ID}'
+					AND
+						name = '$1'";
+			}
+			main::dbQuery($db, $query);
+
+			# Update tracking
+			$server->{Players}{$player->{ID}}->{Name} = $1;
+			if ($main::conf{Mode} eq 'name') {
+				my %tmp = $server->{Player}{$player->{Name}};
+				$server->{Players}{$1} = %tmp;
+				delete $server->{Players}{$player->{Name}};
+				$server->{Players}{$1}->{Name} = $1;
+			}
+			print main::debugMessage("$player->{Name} changed name to $1");
 		} else {
-			$out .= "UNRECOGNISED CSTRIKE PLAYER EVENT: $verb\_$line\n";
+			main::errorMessage("UNRECOGNISED CSTRIKE PLAYER EVENT: $verb - $line");
 		}
 	}
-	print "--> $out\n";
 	return 1;
 }
 
@@ -206,42 +168,61 @@ sub teamEvent
 {
 	shift;
 	my ($server, $utime, $team, $line) = @_;
-	my ($verb, $ally, $score, $numplayers, $action, $out, %properties);
+	my ($verb, $ally, $score, $numplayers, $action, %properties);
 	
 	$line =~ s/([^\"\(]+)\s+//;
 	$verb = $1;
 	
 	if ($verb eq 'triggered') {
+		my $out;
 		$line =~ /\"(.*?)\" (.*?)$/;
 		$action = $1;
 		%properties = getProperties($2);
 # Reward team
-		$out = "$team triggered $action";
-		foreach my $i (keys %properties) { $out .= " ($i $properties{$i})"; }
+		main::debugMessage("$team triggered $action");
+		foreach my $i (keys %properties) {
+			$out .= " ($i $properties{$i})";
+		}
+		main::debugMessage($out);
 	} elsif ($verb eq 'formed alliance with team') {
 		$line =~ /^\"(.*?)\"$/;
 		$ally = $1;
 # setup alliance table
 # if a player from team kills a player from ally, count as TK.
-		$out = "$team is allied with $ally";
+		main::debugMessage("$team is allied with $ally");
 	} elsif ($verb eq 'scored') {
 		$line =~ /^\"(.*?)\" with \"(.*?)\" players$/;
 		$score      = $1;
 		$numplayers = $2;
 # award players on team with score/numplayers
-		$out = "$team scored $score with $numplayers players";
+		main::debugMessage("$team scored $score with $numplayers players");
 	} else {
-		$out = "UNRECOGNISED CSTRIKE TEAM EVENT: $verb $line";
+		main::errorMessage("UNRECOGNISED CSTRIKE TEAM EVENT: $verb - $line");
 	}
-	print "--> $out\n";
+}
+
+sub mapEvent
+{
+	shift;
+	my ($server, $utime, $event) = @_;
+	return 1;
+}
+
+sub worldEvent
+{
+	shift;
+	my ($server, $utime, $event) = @_;
+	
+	main::debugMessage("World triggered $event", 2);
+	return 1;
 }
 
 sub cvarEvent
 {
 	shift;
 	my ($server, $utime, $cvar, $value) = @_;
-	my $out;
-	print "--> $out\n";
+
+	main::debugMessage("$cvar = $value", 2);
 	return 1;
 }
 
