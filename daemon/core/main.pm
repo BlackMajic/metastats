@@ -58,7 +58,7 @@ sub dbQuery
 	my $i;
 	
 	foreach $i ($main::queries) {
-		print "\n$queries[$i]\n" if ($main::conf{LogLevel} >= 5);
+		main::debugMessage("\n$queries[$i]\n", 5);
 		# Stop mulitple queries from happening in one string
 		my $dbQuery = (split /[^\\];/, $queries[$i])[0];
 		
@@ -202,7 +202,8 @@ sub getTrackedServers
 			Map		=> '',
 			MinPlayers	=> $main::conf{MinPlayers},
 			Players		=> (),
-			Pre		=> ()};
+			Pre		=> (),
+			LogFileHandle	=> new IO::File()};
 		
 		# Associate server ip:port with its ID for quicker checking
 		$main::serverIPs{$result->{server_ip}.":".$result->{server_port}} = $result->{server_id};

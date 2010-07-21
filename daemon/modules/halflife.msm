@@ -103,6 +103,7 @@ sub parse
 			# $1 = Var
 			# $2 = Value
 			
+			main::debugMessage("Handing to $ext", 3);
 			$ext->cvarEvent($server, $utime, $1, $2);
 			
 		} elsif ($line =~ /^Server cvars end$/) {
@@ -124,13 +125,15 @@ sub parse
 			main::debugMessage($out, 2);
 
 			$server->{LogFile} = $1;
-			$server->{LogFileHandle} = new FileHandle();
-			$server->{LogfileHandle}->open(">$server->{LogPath}/$server->{LogFile}") or main::errorMessage("Could not open LogFile for write");
+			if ($main::conf{LogCloneDir}) {
+				$server->{LogfileHandle}->open(">$server->{LogCloneDir}/$server->{LogFile}") or main::errorMessage("Could not open LogFile for write");
+			}
 		} elsif ($line =~ /^Log file closed/) {
 			# 002.b Log file closed
-			
-			$server->{LogFileHandle}->print("$otime $line\n");
-			$server->{LogFileHandle}->close() or main::errorMessage("Could not close LogFileHandle");
+			if ($server->{LogFileHandle}->fileno && $main::conf{LogCloneDir}) {
+				print { $server->{LogFileHandle} } "$otime $line\n";
+				$server->{LogFileHandle}->close() or main::errorMessage("Could not close LogFileHandle");
+			}
 			$server->{LogFile} = '';
 			main::debugMessage("LOG: file closed", 2);
 		}
@@ -150,6 +153,7 @@ sub parse
 			main::debugMessage("MAP: Started $2 (CRC $4)", 3);
 		}
 		$server->{Map} = $2;
+		main::debugMessage("Handing to $ext", 3);
 		$ext->mapEvent(\&$server, $utime, $1, $2, $4);
 	} elsif ($line =~ /^(Bad Rcon|Rcon)\: \"rcon (\d+) \"(.*?)\" (.*)\" from \"(.*?)\"/) {
 		# 004.a     Rcon: "rcon challenge "pass" command" from "ip:port"
@@ -232,8 +236,8 @@ sub parse
 		# 062. World triggered "action"
 		# $1 = action
 		
+		main::debugMessage("Handing to $ext", 3);
 		$ext->worldEvent($server, $utime, $1);
-		main::debugMessage("Handed to $ext", 3);
 	} elsif ($line =~ /^(\"|Player|Kick)/) {
 		# 050-060, 063, 066-069
 		
@@ -319,12 +323,12 @@ sub parse
 			}
 		}
 		main::errorMessage($line);
-		main::debugMessage("Handed to $ext", 3);
+		main::debugMessage("Handing to $ext", 3);
 		$ext->playerEvent($db, $server, $utime, \%player, $line);
 	} else {
 		main::errorMessage("UNRECOGNISED: $line");
 	}
-	$server->{LogFileHandle}->print("$otime $line\n");
+	print { $server->{LogFileHandle} } "$otime $line\n" if ($server->{LogFileHandle}->fileno && $main::conf{LogCloneDir});
 	
 	return 1;
 }

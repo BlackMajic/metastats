@@ -38,6 +38,7 @@ use Getopt::Long;
 use Time::Local;
 use Digest::MD5;
 use DBI;
+use IO::File;
 use IO::Socket;
 use Thread::Pool::Simple;
 Getopt::Long::Configure ("bundling");
