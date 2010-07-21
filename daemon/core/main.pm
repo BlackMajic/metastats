@@ -102,9 +102,9 @@ sub updateCache
 #
 sub updateGetVersion
 {
-	my $updateserver = "metastats.sourceforge.net";
+	my $updateserver = "blackmajic.github.com/metastats";
 	my $updateport = "80";
-	my $updateurl = "/update.php";
+	my $updateurl = "/update.html";
 	my ($ln, $maj, $min, $rev);
 	my @res_ver = (0,0,0);
 	
