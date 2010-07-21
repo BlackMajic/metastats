@@ -35,11 +35,12 @@ use POSIX;
 sub dbConnect
 {
 	print "  Connecting to database..\t\t";
-	my $db = DBI->connect("DBI:$main::conf{DBType}:".$main::conf{DBName}.":".$main::conf{DBHost}.":".$main::conf{DBPort},
+	my $db = DBI->connect("DBI:".$main::conf{DBType}.":".$main::conf{DBName}.":".$main::conf{DBHost}.":".$main::conf{DBPort},
 				 $main::conf{DBUser},
-				 $main::conf{DBPass})
-			or die(boxFail() . "Unable to connect to database:\n->$DBI::errstr\n");
-	print boxOK();
+				 $main::conf{DBPass},
+				 {PrintError => 0})
+			or die("[ fail ]\nUnable to connect to database:\n->$DBI::errstr\n");
+	print "[  ok  ]\n";
 	return $db;
 }
 
@@ -58,7 +59,7 @@ sub dbQuery
 	
 	foreach $i ($main::queries) {
 		print "\n$queries[$i]\n" if ($main::conf{LogLevel} >= 5);
-		# Stop multipul queries from happening in one string
+		# Stop mulitple queries from happening in one string
 		my $dbQuery = (split /[^\\];/, $queries[$i])[0];
 		
 		my $dbStatement = $dbObject->prepare($dbQuery)
@@ -83,9 +84,9 @@ sub dbDisconnect
 	my ($db) = @_;
 	print "  Disconnecting from database..\t\t";
 	
-	$db->disconnect() or die(boxFail());
+	$db->disconnect() or die("[ fail ]\n");
 	
-	boxOK()
+	print "[  ok  ]\n";
 }
 
 # updateCache ()
@@ -123,7 +124,7 @@ sub updateGetVersion
 			($maj, $min, $rev) = ($1, $2, $3);
 		}
 	}
-	close ($http);
+	close($http);
 	
 	@res_ver[0] = $maj;
 	@res_ver[1] = $min;
@@ -145,20 +146,20 @@ sub updateMetastats
 		my ($rMaj, $rMin, $rRev) = updateGetVersion();
 		my ($lMaj, $lMin, $lRev) = split(/\./, $main::version);
 		if ($lMaj < $rMaj) {
-			print boxOK() . "    **A major update is available**\n";
+			print "[  ok  ]\n    **A major update is available**\n";
 		} elsif ($lMin < $rMin) {
-			print boxOK() . "    **A minor update is available**\n";
+			print "[  ok  ]\n    **A minor update is available**\n";
 		} elsif ($lRev < $rRev) {
-			print boxOK() . "    **An update is available**\n";
+			print "[  ok  ]\n    **An update is available**\n";
 		} else {
 			if (!$rMaj && !$rMin && !$rRev) {
-				print boxFail() . "    Metastats cannot contact the update server.\n";
+				print "[ fail ]\n    Metastats cannot contact the update server.\n";
 			} else {
-				print boxOK() . "    Metastats is up to date.\n";
+				print "[  ok  ]\n    Metastats is up to date.\n";
 			}
 		}
 	} else {
-		print boxSkip();
+		print "[ skip ]\n";
 	}
 }
 
@@ -209,7 +210,11 @@ sub getTrackedServers
 	$ret[0] = %servers;
 	$ret[1] = %serverIPs;
 	$total = 0 if (!$total);
-	print "  Tracking [ " . colored($total, "bold") . " ] Servers.\n";
+	if ($total == 1) {
+		print "  Tracking [ " . $total . " ] Server.\n";
+	} else {
+		print "  Tracking [ " . $total . " ] Servers.\n";
+	}
 	
 	return @ret;
 }
@@ -251,29 +256,29 @@ sub getHandlers
 				foreach $r (&dbQuery($db, $query)) {
 					$total++;
 					print "    +$r->{ext_long}";
-					if (-e $main::conf{ModuleDir} . '/' . $r->{module} . '_' . $r->{ext_short} . '.mem') {
+					if (-e $main::conf{ModuleDir} . '/' . $r->{module} . '_' . $r->{ext_short} . '.mse') {
 						# Require it
-						require $main::conf{ModuleDir} . '/' . $r->{module} . '_' . $r->{ext_short} . '.mem';
+						require $main::conf{ModuleDir} . '/' . $r->{module} . '_' . $r->{ext_short} . '.mse';
 						
 						# Initialise it
 						if ("$r->{module}_$r->{ext_short}"->init()) {
 							$good++;
 							$handlers{"$r->{module}_$r->{ext_short}"} = {};
 						} else {
-							print "\t\t\t\t" . boxFail();
+							print "\t\t\t\t[ fail ]\n";
 						}
 					} else {
-						print "\t\t\t" . boxNoFile();
+						print "\t\t\t[nofile]\n";
 					}
 				}
 			} else {
-				print "\t\t\t\t" . boxFail();
+				print "\t\t\t\t[ fail ]\n";
 			}
 		} else {
-			print "\t\t\t\t" . boxNoFile();
+			print "\t\t\t\t[nofile]\n";
 		}
 	}
-	print "  [ " . colored("$good of $total", "bold") . " ] Modules Initialized.\n";
+	print "  Initialized [ " . $good . " of " . $total . " ] modules.\n";
 	
 	return %handlers; #, %modules, %extensions);
 }

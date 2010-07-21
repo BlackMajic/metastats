@@ -23,7 +23,7 @@ use POSIX;
 
 sub init
 {
-	print "\t\t" . main::boxOK();
+	print "\t\t[  ok  ]\n";
 	return 1;
 }
 

@@ -35,12 +35,11 @@ use strict;
 use POSIX;
 use Config;
 use Getopt::Long;
-use Term::ANSIColor;
 use Time::Local;
 use Digest::MD5;
 use DBI;
 use IO::Socket;
-use Thread::Pool;
+use Thread::Pool::Simple;
 Getopt::Long::Configure ("bundling");
 
 $|=1;
@@ -70,12 +69,11 @@ is free software, you are welcome to redistribute
 it under certain conditions. For further details,
 please visit http://www.gnu.org/copyleft/gpl.html\n\n";
 
-my $usage;
+my $usage = "\nUsage: [cat PATH/*.log |] $0 [OPTIONS]...\n";
 if ($ENV{OS} =~ /indows/ || $ENV{OSTYPE} =~ /indows/) {
 	$usage = "\nUsage: [type PATH\*.log |] $0 [OPTIONS]...\n";
-} else {
-	$usage = "\nUsage: [cat PATH/*.log |] $0 [OPTIONS]...\n";
 }
+
 $usage .= "Recieve streamed logs from one or more gameservers
 to be parsed and inserted into a database of some sort.
 
@@ -155,7 +153,7 @@ die($header) if ($cl{version});
 ##
 ## Check Dependancies
 ##
-$Config{useithreads} or die(colored("\nMetastats $version requires ithreads support. Please recompile perl(5.8.1+) and then reload Metastats.\n\n", "red"));
+$Config{useithreads} or die("\nMetastats $version requires ithreads support. Please recompile perl(5.8.1+) and then reload Metastats.\n\n");
 
 ##
 ## Begin Execution
@@ -181,19 +179,25 @@ our %handler = getHandlers($db);
 our (%servers, %serverIPs);
 getTrackedServers($db);					#Returns nothing
 
+# Initialize Threads
+our $threadPool = Thread::Pool::Simple->new(
+										min => $conf{ThreadsMin},
+										max => $conf{ThreadsMax},
+										load => $conf{ThreadsLoad},
+										passid => 0,
+										init => sub(){debugMessage("Creating Thread", 2)},
+										post => sub(){debugMessage("Destroying Thread", 2)});
+print "  Initialized [ " . $conf{ThreadsMin} . " of " . $conf{ThreadsMax} . " ] thread workers.\n";
+
 # Create Sockets
-my $tcpThread; #= netCreateTCPListenSocket();			#Infanant Loop
+my $tcpThread;# = netCreateTCPListenSocket();			#Infanant Loop
 my $udpSocket = (netCreateUDPListenSocket())[0];
 my @udpOutSockets = netCreateUDPSendSocket($db);
 
-# Initialize Threads
-our $threadPool = Thread::Pool->new({do => sub{}, workers => $conf{Workers}});
-print "  [ " . colored("$conf{Workers} of $conf{MaxThreads}", "bold") . " ] thread workers initialized.\n";
-
 print "\nNow logging using ";
-print colored("log time", "bold")	if ($conf{UseTimestamp});
-print colored("database time", "bold")	if (!$conf{UseTimestamp});
-print " in " . colored($conf{Mode}, "bold") . " mode.\n";
+print "log time"		if ($conf{UseTimestamp});
+print "database time"	if (!$conf{UseTimestamp});
+print " in " . $conf{Mode} . " mode.\n";
 print "--------------------------------------------------\n\n";
 
 ##
@@ -221,8 +225,9 @@ for (;;) {
 			}
 		}
 		debugMessage("Recognised $servers{$serverID}->{Module} server $UDPHost:$UDPPort", 6);
-		debugMessage($incdata, 4);
-		$threadPool->job($servers{$serverID}->{Module}->parse($db, $servers{$serverID}, $incdata));
+		debugMessage($incdata, 6);
+		
+		$threadPool->add(\$servers{$serverID}->{Module}->parse($db, $servers{$serverID}, $incdata));
 	} else {
 		errorMessage("Unrecognised server: $UDPHost:$UDPPort");
 	}
@@ -256,10 +261,11 @@ sub setPerlConfig
 	$cv{NetUDPPort}		= '27500';
 	$cv{NetTCPHost}		= '';
 	$cv{NetTCPPort}		= '27500';
-	$cv{MaxThreads}		= 10;
-	$cv{Workers}		= $cv{MaxThreads}/5;
+	$cv{ThreadsMax}		= 10;
+	$cv{ThreadsMin}		= 2;
+	$cv{ThreadsLoad}	= 10;
 	
-	print boxOK();
+	print "[  ok  ]\n";
 	return %cv;
 }
 
@@ -297,9 +303,9 @@ sub setConfConfig
 				$cv{$var} = $val if (($var) && ($val));
 			}
 		}
-		print boxOK();
+		print "[  ok  ]\n";
 	} else {
-		print boxFail() . "\n";
+		print "[ fail ]\n";
 		die("\nThe configuration file was not found.\nPlease check that $configFile exists.\n");
 	}
 	
@@ -327,7 +333,7 @@ sub setDBConfig
 		$cv{$result->{keyname}} = $result->{value};
 	}
 	
-	print boxOK();
+	print "[  ok  ]\n";
 	return %cv;
 }
 
@@ -378,7 +384,7 @@ sub setCLConfig
 	$cv{RconEnable}		= 0			if (!$cm{rcon});
 	$cv{UseTimestamp}	= 1			if ($cm{timestamp});
 	
-	print boxOK();
+	print "[  ok  ]\n";
 	return %cv;
 }
 
@@ -393,9 +399,9 @@ sub tcpWorker
 	my $incdata = '';
 	
 	while ($sockid->recv($incdata, 1024)) {
-		debugMessage("TCP-> $incdata", 2);
+		debugMessage("TCP-> $incdata", 6);
 	}
-	debugMessage("Worker thread exiting", 3);
+	debugMessage("TCP worker thread exiting", 6);
 }
 
 # void tcpListener ()
@@ -404,32 +410,31 @@ sub tcpWorker
 #
 sub tcpListener
 {
-	print boxOK() . "    Creating TCP listen socket..\t";
+	print "[  ok  ]\n    Creating TCP listen socket..\t";
 	my $tcpSocket = IO::Socket::INET->new(Proto=>"tcp",
 						Listen=>1,
 						Reuse=>1,
 						LocalHost=>$conf{NetTCPHost},
 						LocalPort=>$conf{NetTCPPort})
-	or die(boxFail() . "Could not create TCP listen socket:\n->$@\n");
-	print boxOK() . "    Listening on port $conf{NetTCPPort}(TCP).\n";
+	or die("[ fail ]\nCould not create TCP listen socket:\n->$@\n");
+	print "[  ok  ]\n    Listening on port $conf{NetTCPPort}(TCP).\n";
 	
 	for (;;) {
 		my $tlsock_new = $tcpSocket->accept();
-		debugMessage("Incoming TCP connection from ".$tlsock_new->peerhost.":".$tlsock_new->peerport."..", 3);
-		debugMessage("Launching new worker thread..", 3);
-		my $tlnID = threads->new(\&tcpWorker($tlsock_new));
+		debugMessage("Incoming TCP connection from ".$tlsock_new->peerhost.":".$tlsock_new->peerport."..", 6);
+		debugMessage("Launching new TCP worker thread..", 6);
+		$threadPool->add(\&tcpWorker($tlsock_new));
 	}
 }
 
-# void netCreateTCPSocket()
+# void netCreateTCPListenSocket()
 #
 # Creates the TCP Listener thread
 #
-sub netCreateTCPSocket
+sub netCreateTCPListenSocket
 {
 	print "  Creating TCP listener thread..\t";
-	$tcpThread = threads->new(\&tcpListener());
-	return $tcpThread;
+	$threadPool->add(\&tcpListener());
 }
 
 # array netCreateUDPSocket()
@@ -447,7 +452,7 @@ sub netCreateUDPListenSocket
 		my $udpSocket = IO::Socket::INET->new(  Proto=>"udp",
 							LocalHost=>$conf{NetUDPHost},
 							LocalPort=>$conf{NetUDPPort})
-		or die(boxFail() . "\nCould not create UDP listen socket:\n-> $@\n\n");
+		or die("[ fail ]\n\nCould not create UDP listen socket:\n-> $@\n\n");
 		
 		push(@inSockets, $udpSocket);
 		print "    Listening to: $ip:$port\n";
@@ -460,14 +465,14 @@ sub netCreateUDPSendSocket
 	my ($db) = @_;
         my ($i, @addrs, @outSockets);
 	
-	my $query = "SELECT
-			value
-		FROM
-			$main::conf{DBPrefix}_core_config
-		WHERE
-			keyname = 'LogForward'";
-	my $result = (&dbQuery($db, $query))[0];
-	@addrs = split(/\s/, $result->{value});
+#	my $query = "SELECT
+#			value
+#		FROM
+#			$main::conf{DBPrefix}_core_config
+#		WHERE
+#			keyname = 'LogForward'";
+#	my $result = (dbQuery($db, $query))[0];
+	@addrs = split(/\s/, $main::conf->{LogForward}); #$result->{value});
 	
 	if ($addrs[0]) {
 		print "  Creating UDP send sockets..\n";
@@ -477,10 +482,10 @@ sub netCreateUDPSendSocket
 			my $udpSocket = new IO::Socket::INET->new(Proto=>'udp',
 								  PeerAddr=>$ip,
 								  PeerPort=>$port)
-			or die(boxFail() . "\nCould not create UDP write socket:\n-> $@\n\n");
+			or die("[ fail ]\n\nCould not create UDP write socket:\n-> $@\n\n");
 			
 			push(@outSockets, $udpSocket);
-			debugMessage("Forwarding to $ip:$port", 3);
+			debugMessage("Forwarding to $ip:$port", 6);
 		}
 	}
 	return @outSockets;
@@ -516,40 +521,31 @@ sub sigDIE
 
 	dbDisconnect();
 	
-	print boxOK() . "\n";
+	print "[  ok  ]\n\n";
 	die("SIGDIE");
-}
-
-sub boxOK
-{
-	return "[  " . colored("ok", "green") . "  ]\n";
-}
-
-sub boxFail
-{
-	return "[ " . colored("fail", "red") . " ]\n";
-}
-
-sub boxSkip
-{
-	return "[ " . colored("skip", "yellow") . " ]\n";
-}
-
-sub boxNoFile
-{
-	return "[" . colored("nofile", "yellow") . "]\n";
 }
 
 sub errorMessage
 {
 	my ($error) = @_;
 	
-	print colored("\n\n$error\n\n", "red");
+	print "\n\nERROR: $error\n\n";
 }
 
+# void debugMessage(string message, int level)
+#
+# Prints $message to the console prefixed by level* ">"
+# Debug levels are cumulative, so level 4 will also output 1,2,3
+# 0 - Output the init header only (and any errors)
+# 1 - General messages
+# 2 - Less general messages
+# 3 - Module-specific mesages
+# 4 - Extension-specific messages
+# 5 - Database related messages
+# 6 - Network related messages
 sub debugMessage
 {
-	my ($line, $level) = @_;
+	my ($msg, $level) = @_;
 	my ($i, $out);
 	
 	$level = 1 if (!$level);
@@ -557,6 +553,6 @@ sub debugMessage
 		for ($i; $i < $level; $i++) {
 			$out .= ">";
 		}
-		print $out . " $line\n";
+		print $out . " $msg\n";
 	}
 }

@@ -25,15 +25,16 @@ sub init
 {
 	our %r = {};
 #	$r{Player} = gw/\"(.*?)<(\d+)><(.*?)><(.*?)>\"/;
-	print "\t\t\t" . main::boxOK();
+	print "\t\t\t[  ok  ]\n";
 	return 1;
 }
 
 # void playerEvent(string event_time, event_type, event_object; array @player1, @player2)
+#
 # This function is called by the gamesupport module when an event happens.
 # The parameters take different contents based on event type, and may not always be filled.
 # eg. with RCON, event_time = time, event_type = 'RCON', and @player1 = ('command', 'from', 'password')
-
+#
 sub playerEvent
 {
 	shift;
@@ -48,11 +49,11 @@ sub playerEvent
 	} else {
 		$trackID = 'SteamID';
 	}
-	main::errorMessage($line);
+	main::errorMessage($line); # TODO: Remove when not testing
 	$line =~ s/^([^\"\(]+)\s*//;
 	$verb = $1;
 	
-	print main::colored("'$verb' ", "cyan") . main::colored("'$line'", "yellow");
+	print "'$verb' - '$line'";
 	if ($line =~ s/^\"(.*?)<(\d+)><(.*?)><(.*?)>\"//) {
 		$victim{Name}    = $1;
 		$victim{UID}     = $2;
@@ -159,6 +160,7 @@ sub playerEvent
 			print main::debugMessage("$player->{Name} changed name to $1");
 		} else {
 			main::errorMessage("UNRECOGNISED CSTRIKE PLAYER EVENT: $verb - $line");
+# db insert for auto-learn
 		}
 	}
 	return 1;
@@ -198,13 +200,14 @@ sub teamEvent
 		main::debugMessage("$team scored $score with $numplayers players");
 	} else {
 		main::errorMessage("UNRECOGNISED CSTRIKE TEAM EVENT: $verb - $line");
+# learn team event
 	}
 }
 
 sub mapEvent
 {
 	shift;
-	my ($server, $utime, $event) = @_;
+	my ($server, $utime, $event, $map, $crc) = @_;
 	return 1;
 }
 
@@ -213,7 +216,7 @@ sub worldEvent
 	shift;
 	my ($server, $utime, $event) = @_;
 	
-	main::debugMessage("World triggered $event", 2);
+	main::debugMessage("World triggered $event", 3);
 	return 1;
 }
 
@@ -222,7 +225,7 @@ sub cvarEvent
 	shift;
 	my ($server, $utime, $cvar, $value) = @_;
 
-	main::debugMessage("$cvar = $value", 2);
+	main::debugMessage("$cvar = $value", 3);
 	return 1;
 }
 

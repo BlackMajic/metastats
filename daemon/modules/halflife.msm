@@ -30,7 +30,7 @@ sub init
 {
 	shift;
 	
-	print "\t\t\t\t" . main::boxOK();
+	print "\t\t\t\t[  ok  ]\n";
 	
 	return 1;
 }
@@ -88,6 +88,7 @@ sub parse
 		return 0;
 	}
 	
+	
 	if ($line =~ /^\/\//) {
 		# 000. // Comment
 		# I am a comment, Ignore me.
@@ -120,16 +121,18 @@ sub parse
 			
 			my $out = "LOG: started logging to $1 for game: $2\n";
 			$out .= "LOG: protocol: $3 / release: $4 / build: $5";
-			main::debugMessage($out, 3);
+			main::debugMessage($out, 2);
 
 			$server->{LogFile} = $1;
-# open IO
+			$server->{LogFileHandle} = new FileHandle();
+			$server->{LogfileHandle}->open(">$server->{LogPath}/$server->{LogFile}") or main::errorMessage("Could not open LogFile for write");
 		} elsif ($line =~ /^Log file closed/) {
 			# 002.b Log file closed
 			
-			main::debugMessage("LOG: file closed", 3);
+			$server->{LogFileHandle}->print("$otime $line\n");
+			$server->{LogFileHandle}->close() or main::errorMessage("Could not close LogFileHandle");
 			$server->{LogFile} = '';
-# write line, close IO
+			main::debugMessage("LOG: file closed", 2);
 		}
 	} elsif ($line =~  /^(Loading|Started) map \"(.*?)\" (\(CRC \"(.*?)\"\))?/) {
 		# $1 = [Loading|Started]
@@ -140,13 +143,14 @@ sub parse
 		if ($1 eq 'Loading') {
 			# 003.a Loading map "map"
 			
-			main::debugMessage("MAP: Loading $2", 2);
+			main::debugMessage("MAP: Loading $2", 3);
 		} elsif ($1 eq 'Started') {
 			# 003.b Started map "map" (CRC "crc")
 			
-			main::debugMessage("MAP: Started $2 (CRC $4)", 2);
+			main::debugMessage("MAP: Started $2 (CRC $4)", 3);
 		}
-		$ext->mapEvent($1, $2);
+		$server->{Map} = $2;
+		$ext->mapEvent(\&$server, $utime, $1, $2, $4);
 	} elsif ($line =~ /^(Bad Rcon|Rcon)\: \"rcon (\d+) \"(.*?)\" (.*)\" from \"(.*?)\"/) {
 		# 004.a     Rcon: "rcon challenge "pass" command" from "ip:port"
 		# 004.b Bad Rcon: "rcon challenge "pass" command" from "ip:port"
@@ -166,7 +170,7 @@ sub parse
 					WHERE
 						server_id = $server->{ID}";
 				main::dbQuery($db, $query);
-				main::debugMessage(" -- Updated Rcon password from $server->{Rcon}");
+				main::debugMessage(" -- Updated Rcon password from $server->{Rcon}", 1);
 				$server->{Rcon} = $3;
 			}
 		} elsif ($1 eq 'Bad Rcon') {
@@ -179,7 +183,7 @@ sub parse
 					WHERE
 						server_id = $server->{ID}";
 				main::dbQuery($db, $query);
-				main::debugMessage(" -- Protected Metastats from ban");
+				main::debugMessage(" -- Protected Metastats from ban", 1);
 				$server->{Rcon} = '';
 			}
 		}
@@ -202,7 +206,7 @@ sub parse
 		# 005. Server name is "hostname"
 		# $1 = hostname
 		
-		main::debugMessage("SERVER NAME: $1");
+		main::debugMessage("SERVER NAME: $1", 3);
 		my $query = "UPDATE
 				$main::conf{DBPrefix}_core_servers
 			SET
@@ -214,7 +218,7 @@ sub parse
 		# 006. Server say "message"
 		# $1 = message
 		
-		main::debugMessage("SERVER SAID: $1");
+		main::debugMessage("SERVER SAID: $1", 3);
 	} elsif ($line =~ /^Team/) {
 		# 061. Team "team" triggered "action"
 		# 064. Team "team" formed alliance with team "team"
@@ -222,9 +226,8 @@ sub parse
 		
 		$line =~ s/^Team \"(.*?)\"\s+//;
 		# Pass the team and the rest of the line to the ext.
+		main::debugMessage("Handing to $ext", 3);
 		$ext->teamEvent($server, $utime, $1, $line);
-		
-		main::debugMessage("Handed to $ext", 3);
 	} elsif ($line =~ /^World triggered \"(.*?)\"/) {
 		# 062. World triggered "action"
 		# $1 = action
@@ -248,7 +251,7 @@ sub parse
 			if ($line =~ s/^connected, address\s*\"([\d.]+)\:(\d+)\"//) {
 				$player{IP}   = $1;
 				$player{Port} = $2;
-				main::debugMessage("CONNECTED: $player{Name} <$player{$trackID}> ($player{IP})");
+				main::debugMessage("CONNECTED: $player{Name} <$player{$trackID}> ($player{IP})", 3);
 				my $query = "SELECT
 						player_id
 					FROM
@@ -287,7 +290,7 @@ sub parse
 							0,0,0)";
 					main::dbQuery($db, $query);
 					$server->{'Players'}{$trackID} = \%player;
-					main::debugMessage("Added new player: $player{Name}");
+					main::debugMessage("Added new player: $player{Name}", 3);
 				} else {
 					# Old news
 					$query = "UPDATE
@@ -308,11 +311,11 @@ sub parse
 			} elsif ($line =~ /^entered the game/) {
 				#$server->{Players}{$player{$trackID}} = $server->{Preconnect}{$player{$trackID}};
 				$server->{NumPlayers}++;
-				main::debugMessage("NumPlayers: $server->{NumPlayers}");
+				main::debugMessage("NumPlayers: $server->{NumPlayers}", 2);
 			} elsif ($line =~ /^disconnected/) {
 				delete $server->{Players}{$player{$trackID}};
 				$server->{NumPlayers}--;
-				main::debugMessage("NumPlayers: $server->{NumPlayers}");
+				main::debugMessage("NumPlayers: $server->{NumPlayers}", 2);
 			}
 		}
 		main::errorMessage($line);
@@ -321,8 +324,7 @@ sub parse
 	} else {
 		main::errorMessage("UNRECOGNISED: $line");
 	}
-# access $writeThread for disc IO
-# write "$otime $line\n"
+	$server->{LogFileHandle}->print("$otime $line\n");
 	
 	return 1;
 }
@@ -338,6 +340,14 @@ sub parseName
 	#print "parseName: $1, $2, $3, $4\n";
 	push @rvals, ($1, $2, $3, $4);
 	return @rvals;
+}
+
+# void learnEvent(string type, mixed ...)
+#
+sub learnEvent
+{
+	my ($vars) = @_;
+	
 }
 
 1;
