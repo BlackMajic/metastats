@@ -126,9 +126,9 @@ sub updateGetVersion
 	}
 	close($http);
 	
-	@res_ver[0] = $maj;
-	@res_ver[1] = $min;
-	@res_ver[2] = $rev;
+	$res_ver[0] = $maj;
+	$res_ver[1] = $min;
+	$res_ver[2] = $rev;
 	
 	return @res_ver;
 }
