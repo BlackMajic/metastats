@@ -123,10 +123,12 @@ sub parse
 			my $out = "LOG: started logging to $1 for game: $2\n";
 			$out .= "LOG: protocol: $3 / release: $4 / build: $5";
 			main::debugMessage($out, 2);
-
+			
 			$server->{LogFile} = $1;
+			$server->{LogFile} =~ s/^logs\///;
 			if ($main::conf{LogCloneDir}) {
-				$server->{LogfileHandle}->open(">$server->{LogCloneDir}/$server->{LogFile}") or main::errorMessage("Could not open LogFile for write");
+				my $filePath = "$main::conf{LogCloneDir}/$server->{ID}/$server->{LogFile}";
+				$server->{LogFileHandle}->open($filePath, ">") or main::errorMessage("Could not open $filePath for write");
 			}
 		} elsif ($line =~ /^Log file closed/) {
 			# 002.b Log file closed
@@ -154,7 +156,7 @@ sub parse
 		}
 		$server->{Map} = $2;
 		main::debugMessage("Handing to $ext", 3);
-		$ext->mapEvent(\&$server, $utime, $1, $2, $4);
+		$ext->mapEvent($server, $utime, $1, $2, $4);
 	} elsif ($line =~ /^(Bad Rcon|Rcon)\: \"rcon (\d+) \"(.*?)\" (.*)\" from \"(.*?)\"/) {
 		# 004.a     Rcon: "rcon challenge "pass" command" from "ip:port"
 		# 004.b Bad Rcon: "rcon challenge "pass" command" from "ip:port"
@@ -328,7 +330,7 @@ sub parse
 	} else {
 		main::errorMessage("UNRECOGNISED: $line");
 	}
-	print { $server->{LogFileHandle} } "$otime $line\n" if ($server->{LogFileHandle}->fileno && $main::conf{LogCloneDir});
+	$server->{LogFileHandle}->print("$otime $line\n") if ($server->{LogFileHandle}->fileno && $main::conf{LogCloneDir});
 	
 	return 1;
 }
